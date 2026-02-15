@@ -1,6 +1,6 @@
 # SRS_Project_2
 
-Google Drive Folder: https://drive.google.com/drive/folders/1duzNGo5EVhPuD7NN8ipNjuUqLYmhyQxR?usp=sharing
+Google Drive Folder (containing .zip data file): https://drive.google.com/drive/folders/1duzNGo5EVhPuD7NN8ipNjuUqLYmhyQxR?usp=sharing
 
 
 Question ideas:
