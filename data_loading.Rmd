@@ -24,53 +24,53 @@ print(data)
 
 ```{r}
 
-# put data into table (first year only as the data is huge)
-
-# extract time
-time <- ncvar_get(data, "time")
-
-# load data as raster stack
-r <- rast("temp_data_SRS.nc")
-
-# convert time to actual dates
-dates <- as.Date(time, origin = "1900-01-01")
-
-# find first year
-first_year <- format(min(dates), "%Y")
-idx_first_year <- which(format(dates, "%Y") == first_year)
-r_first_year <- r[[idx_first_year]]
-names(r_first_year) <- format(dates[idx_first_year], "%b")  # Jan, Feb, etc.
-
-# convert to long-format table
-# xy = TRUE keeps lon/lat
-# long = TRUE makes tidy table (one row per cell per time)
-# remove any row where the value column (tmp) is NA
-df_first_year <- as.data.frame(
-  r_first_year,
-  xy = TRUE,
-  long = TRUE,
-  na.rm = TRUE
-)
-names(df_first_year)[1:2] <- c("lon","lat")
-df_first_year$long <- NULL
-
-
-# reformat it so each row is unique coordinate,time combo
-df_first_year <- df_first_year %>%
-  pivot_longer(
-    cols = Jan:Dec,         
-    names_to = "month",    
-    values_to = "tmp"
-  )
-
-
-# how many duplicates
-
-print(nrow(df_first_year))
-
-print(nrow(unique(df_first_year)))
-
-
+# # put data into table (first year only as the data is huge)
+# 
+# # extract time
+# time <- ncvar_get(data, "time")
+# 
+# # load data as raster stack
+# r <- rast("temp_data_SRS.nc")
+# 
+# # convert time to actual dates
+# dates <- as.Date(time, origin = "1900-01-01")
+# 
+# # find first year
+# first_year <- format(min(dates), "%Y")
+# idx_first_year <- which(format(dates, "%Y") == first_year)
+# r_first_year <- r[[idx_first_year]]
+# names(r_first_year) <- format(dates[idx_first_year], "%b")  # Jan, Feb, etc.
+# 
+# # convert to long-format table
+# # xy = TRUE keeps lon/lat
+# # long = TRUE makes tidy table (one row per cell per time)
+# # remove any row where the value column (tmp) is NA
+# df_first_year <- as.data.frame(
+#   r_first_year,
+#   xy = TRUE,
+#   long = TRUE,
+#   na.rm = TRUE
+# )
+# names(df_first_year)[1:2] <- c("lon","lat")
+# df_first_year$long <- NULL
+# 
+# 
+# # reformat it so each row is unique coordinate,time combo
+# df_first_year <- df_first_year %>%
+#   pivot_longer(
+#     cols = Jan:Dec,         
+#     names_to = "month",    
+#     values_to = "tmp"
+#   )
+# 
+# 
+# # how many duplicates
+# 
+# print(nrow(df_first_year))
+# 
+# print(nrow(unique(df_first_year)))
+# 
+# 
 
 
 ```
@@ -80,7 +80,7 @@ print(nrow(unique(df_first_year)))
 
 
 ```{r}
-
+# load full data into .csv across all years
 
 # load raster and time
 r <- rast("temp_data_SRS.nc")
