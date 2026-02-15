@@ -7,6 +7,8 @@ pdf_document: default
 
 library(ncdf4)
 library(terra)
+library(tidyr)
+library(dplyr)
 
 ```
 
@@ -71,7 +73,18 @@ names(df_first_year)[1:2] <- c("lon","lat")
 df_first_year$long <- NULL
 
 
+# reformat it so each row is unique coordinate,time combo
+df_first_year <- df_first_year %>%
+  pivot_longer(
+    cols = Jan:Dec,         
+    names_to = "month",    
+    values_to = "tmp"
+  )
+
+
 ```
+
+
 
 
 
