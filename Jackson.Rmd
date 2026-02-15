@@ -1,0 +1,79 @@
+---
+output:
+pdf_document: default
+---
+
+```{r}
+
+library(ncdf4)
+library(terra)
+
+```
+
+# Opening the data
+
+```{r}
+
+data <- nc_open("temp_data_SRS.nc")
+
+print(data)
+
+```
+
+```{r}
+# get cordinate (including time) variables
+# note: this is not observed data. this only defines all the possible grid values and times
+
+lat <- ncvar_get(data, "lat")
+lon <- ncvar_get(data, "lon")
+time <- ncvar_get(data, "time")
+print(ncatt_get(data,"time","units")$value)
+
+```
+
+```{r}
+# get a variable (temperature)
+# this is the actal measyred value
+# has three dimensions -> (lon, lat, time)
+
+tmp_array <- ncvar_get(data, "tmp")
+print(dim(tmp_array))
+
+```
+
+```{r}
+
+# put data into table (first year only as the data is huge)
+
+# load data as raster stack
+r <- rast("temp_data_SRS.nc")
+
+# convert time to actual dates
+dates <- as.Date(time, origin = "1900-01-01")
+
+# find first year
+first_year <- format(min(dates), "%Y")
+idx_first_year <- which(format(dates, "%Y") == first_year)
+r_first_year <- r[[idx_first_year]]
+names(r_first_year) <- format(dates[idx_first_year], "%b")  # Jan, Feb, etc.
+
+# convert to long-format table
+# xy = TRUE keeps lon/lat
+# long = TRUE makes tidy table (one row per cell per time)
+# remove any row where the value column (tmp) is NA
+df_first_year <- as.data.frame(
+  r_first_year,
+  xy = TRUE,
+  long = TRUE,
+  na.rm = TRUE
+)
+names(df_first_year)[1:2] <- c("lon","lat")
+df_first_year$long <- NULL
+
+
+```
+
+
+
+
+
