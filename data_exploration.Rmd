@@ -1,0 +1,31 @@
+---
+output:
+pdf_document: default
+---
+
+Initial info:
+
+-removed all instances (coordinates) in which temperature was missing
+-total number of rows (coordinate,date combination) -> 90612481
+
+
+
+
+```{r}
+# load in data (only some of it - the first yearish)
+
+df <- read.csv(unz("tmp_all_years.zip", "tmp_all_years.csv"), nrows = 900000)
+
+
+```
+
+
+```{r}
+
+
+
+
+```
+
+
+
