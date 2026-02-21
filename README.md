@@ -2,6 +2,8 @@
 
 Google Drive Folder (containing .zip data file): https://drive.google.com/drive/folders/1duzNGo5EVhPuD7NN8ipNjuUqLYmhyQxR?usp=sharing
 
+Overleaf: https://www.overleaf.com/6786221333tbsdhqpqqnpk#5d7299
+
 
 Question ideas:
 
