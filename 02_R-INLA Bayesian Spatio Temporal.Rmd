@@ -80,35 +80,28 @@ library(tidyr)
 library(lubridate)
 library(INLA)
 
-# ---------- 1) Read data ----------
-r_tmp <- rast("cru_ts4.09.1901.2024.tmp.dat.nc")   # SpatRaster; each layer = month
-uk <- st_read("geoBoundaries-GBR-ADM1-all/geoBoundaries-GBR-ADM1.shp", quiet = TRUE) |>
-  st_transform(4326)
+# ---------- 1) Read Scotland-only NetCDF from python process ----------
+r_var <- rast("ds_scotland.nc", subds = "anom")  # loads only anomaly tmp data
 
-scot <- uk |>
-  filter(shapeName == "Scotland") |>
-  summarise(geometry = st_union(geometry))
+# Inspect what’s inside
+print(r_var) # names(r_var): to see layer names
 
-# ---------- 2) Crop + mask Scotland ----------
-bb <- st_bbox(scot)
-r_crop <- crop(r_tmp, ext(bb["xmin"], bb["xmax"], bb["ymin"], bb["ymax"]))
-r_scot <- mask(r_crop, vect(scot))  # outside polygon -> NA
-
-# ---------- 3) Dates from NetCDF time metadata ----------
-dates <- terra::time(r_scot)
+# ---------- 2) Dates from NetCDF time metadata ----------
+dates <- terra::time(r_var)
 if (is.null(dates)) {
-  stop("No time metadata found. Run head(names(r_scot)) and paste the output; I will provide a safe parser.")
+  stop("No time metadata found in ds_scotland.nc. Print names(r_var) and we can parse dates safely.")
 }
 dates <- as.Date(dates)
 
-layer_names <- names(r_scot)
-T <- length(layer_names)
+layer_names <- names(r_var)
+T <- nlyr(r_var)
 
-# ---------- 4) Wide dataframe (lon/lat + layers) ----------
-df_wide <- as.data.frame(r_scot, xy = TRUE, na.rm = TRUE) |>
-  rename(lon = x, lat = y)  # IMPORTANT: avoids clash with values_to
+# ---------- 3) Wide dataframe (lon/lat + layers) ----------
+# na.rm=TRUE drops NA cells (outside Scotland) for each layer automatically
+df_wide <- as.data.frame(r_var, xy = TRUE, na.rm = TRUE) |>
+  rename(lon = x, lat = y)
 
-# ---------- 5) Long dataframe (one row per cell-month) ----------
+# ---------- 4) Long dataframe (one row per cell-month) ----------
 df_long <- df_wide |>
   pivot_longer(
     cols = -c(lon, lat),
@@ -120,7 +113,7 @@ df_long <- df_wide |>
     date = dates[t],
     year = year(date),
     month = month(date),
-    cell = interaction(lon, lat, drop = TRUE)
+    cell = interaction(round(lon, 4), round(lat, 4), drop = TRUE)  # stable cell key
   ) |>
   select(lon, lat, cell, t, date, year, month, temp) |>
   filter(!is.na(temp))
@@ -129,7 +122,7 @@ cat("Rows N =", nrow(df_long), "\n")
 cat("Time points T =", length(unique(df_long$t)), "\n")
 cat("Cells S =", length(unique(df_long$cell)), "\n")
 
-# ---------- 6) Build spatial cell map + rook adjacency ----------
+# ---------- 5) Build spatial cell map + rook adjacency ----------
 # Round coordinates to avoid floating mismatches in indexing
 xy_map <- df_long |>
   distinct(cell, lon, lat) |>
@@ -170,7 +163,7 @@ cat("Zero-neighbour cells:", sum(sapply(neighbors, length) == 0), "\n")
 cat("Neighbour count summary:\n")
 print(summary(sapply(neighbors, length)))
 
-# ---------- 7) Write INLA adjacency file manually + read graph ----------
+# ---------- 6) Write INLA adjacency file manually + read graph ----------
 adj_file <- tempfile(fileext = ".adj")
 con <- file(adj_file, open = "w")
 
@@ -191,7 +184,7 @@ close(con)
 
 g <- INLA::inla.read.graph(adj_file)
 
-# ---------- 8) Prepare INLA modelling data ----------
+# ---------- 7) Prepare INLA modelling data ----------
 df_inla <- df_long |>
   left_join(xy_map |> select(cell, cell_id), by = "cell") |>
   mutate(
@@ -200,7 +193,7 @@ df_inla <- df_long |>
     time_ar  = t       # AR(1) index
   )
 
-# ---------- 9) Fit BHST model in INLA ----------
+# ---------- 8) Fit BHST model in INLA ----------
 formula <- temp ~ 1 +
   f(month_id, model = "iid", constr = TRUE) +     # seasonality (sum-to-zero)
   f(time_rw,  model = "rw2", constr = TRUE) +     # smooth long-term trend
@@ -219,7 +212,7 @@ print(summary(fit))
 cat("DIC:", fit$dic$dic, "\n")
 cat("WAIC:", fit$waic$waic, "\n")
 
-# ---------- 10) Plot posterior mean components ----------
+# ---------- 9) Plot posterior mean components ----------
 # RW2 trend
 trend_post <- fit$summary.random$time_rw
 plot(dates, trend_post$mean, type = "l",
@@ -231,7 +224,6 @@ seas_post <- fit$summary.random$month_id
 plot(1:12, seas_post$mean, type = "b",
      xlab = "Month", ylab = "Seasonal effect (posterior mean)",
      main = "Seasonality (month-of-year)")
-axis(1, at = 1:12)
 
 # Spatial effect (BYM2): plot on lon/lat points
 sp_post <- fit$summary.random$cell_id
