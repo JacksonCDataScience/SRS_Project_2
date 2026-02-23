@@ -204,6 +204,10 @@ fit <- inla(
   formula,
   family = "gaussian",
   data = df_inla,
+  control.fixed = list(
+    mean = list("(Intercept)" = 0),
+    prec = list("(Intercept)" = 1/100)   # variance = 100 = 10^2
+  ),
   control.predictor = list(compute = TRUE),
   control.compute = list(dic = TRUE, waic = TRUE, cpo = TRUE)
 )
