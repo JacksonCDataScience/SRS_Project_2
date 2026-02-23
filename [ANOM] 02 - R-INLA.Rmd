@@ -66,7 +66,10 @@ The model decomposes temperature variability into: long-term temporal trend, spa
 # - Handles ocean/outside-domain NaNs properly
 # - Uses anomaly as response (recommended)
 # - Train: 1901–2020, Test: 2021–2024 (held out as NA for prediction)
-# - Models: M0, M1(RW2), M2(+BYM2), M3_iid, M3_tvsp(group=rw1), M3_tvsp(group=ar1)
+# - Models:
+#   M0: baseline
+#   M1: baseline + AR1 short-term + RW2 trend
+#   M2: baseline + AR1 short-term + RW2 trend + BYM2 spatial
 # ============================================================
 
 library(terra)
@@ -77,7 +80,6 @@ library(INLA)
 # ----------------------------
 # A) Read NetCDF + build long table (cell x month)
 # ----------------------------
-
 r_anom <- rast("ds_scotland.nc", subds = "anom")
 r_tmp  <- rast("ds_scotland.nc", subds = "tmp")
 
@@ -136,8 +138,12 @@ df_inla[set == "test", y_obs := NA_real_]  # hold out
 
 S <- max(df_inla$area_id)
 
-# space-time iid index (for interaction iid model)
+# space-time iid index (kept in case you use it later)
 df_inla[, st_iid := (t_id - 1L) * S + area_id]
+
+# ---- NEW: AR(1) index (replicated by area) ----
+# Use a separate name to avoid confusion with RW2 index
+df_inla[, t_ar := t_id]
 
 # ----------------------------
 # C) Build adjacency graph for filtered grid
@@ -207,29 +213,41 @@ g <- inla.read.graph(graph_file)
 ctrl_pred <- list(compute = TRUE, link = 1)
 ctrl_comp <- list(dic = TRUE, waic = TRUE, cpo = FALSE)
 ctrl_fxd  <- list(mean = list("(Intercept)" = 0),
-                  prec = list("(Intercept)" = 1/100) )  # var=100
+                  prec = list("(Intercept)" = 1/100))  # var=100
 
 # M0: baseline
-m0 <- inla(y_obs ~ 1,
-           data = df_inla, family = "gaussian",
-           control.fixed = ctrl_fxd,
-           control.predictor = ctrl_pred,
-           control.compute = ctrl_comp)
+m0 <- inla(
+  y_obs ~ 1,
+  data = df_inla, family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
 
-# M1: baseline + RW2 trend
-m1 <- inla(y_obs ~ 1 + f(t_id, model = "rw2"),
-           data = df_inla, family = "gaussian", control.fixed = ctrl_fxd,
-           control.predictor = ctrl_pred,
-           control.compute = ctrl_comp)
+# M1: baseline + AR1 short-term + RW2 trend
+# - RW2 gives a smooth long-term temporal trend shared across space
+# - AR1 (replicate=area_id) gives cell-specific short-term persistence
+m1 <- inla(
+  y_obs ~ 1 +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(t_ar, model = "ar1", replicate = area_id),
+  data = df_inla, family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
 
-# M2: baseline + RW2 trend + BYM2 spatial
-m2 <- inla(y_obs ~ 1 +
-             f(t_id, model = "rw2") +
-             f(area_id, model = "bym2", graph = g, scale.model = TRUE),
-           data = df_inla, family = "gaussian",
-           control.fixed = ctrl_fxd,
-           control.predictor = ctrl_pred,
-           control.compute = ctrl_comp)
+# M2: baseline + AR1 short-term + RW2 trend + BYM2 spatial
+m2 <- inla(
+  y_obs ~ 1 +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(t_ar, model = "ar1", replicate = area_id) +
+    f(area_id, model = "bym2", graph = g, scale.model = TRUE, constr = TRUE),
+  data = df_inla, family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
 
 # ALL INTERACTION MODELS ARE STILL ERROR----------------------------------------
 # M3a - time varying spatial field
