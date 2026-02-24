@@ -4,25 +4,53 @@ Google Drive Folder (containing .zip data file): https://drive.google.com/drive/
 
 Overleaf: https://www.overleaf.com/6786221333tbsdhqpqqnpk#5d7299
 
+Research Question:
+1. How do long-term temporal trend and spatial dependence explain monthly temperature anomalies over Scotland (1901–2024)?
+2. Do Bayesian spatio-temporal models outperform simpler deterministic/frequentist baselines in explaining and predicting anomalies (especially 2021–2024)?
 
-Question ideas:
+Objectives :
+1. Construct anomalies from raw temperature (Python) so the response represents departures from a baseline climatology
+2. Fit a sequence of Bayesian hierarchical models:
+   - Baseline
+   - Baseline + smooth trend (RW2)
+   - Baseline + trend + spatial (BYM2)
+   - Baseline + trend + spatial + space–time interaction
+3. Add frequentist/deterministic models for comparison
+4. Compare models using:
+      Bayesian: WAIC, DIC
+      Predictive: MAE and RMSE on a held-out period (test 2021–2024; train 1901–2020)
 
-1. Are some regions more impacted by global warming than others, and what characteristics distinguish these regions (ex. distance to coast, distance to equator, elevation, land cover type, etc.)?
-2. When do we predict global warming to reach the "point of now return" in terms of global warming?
-3. Using Bayesian Hierarchical spatio-temporal model to forecast temperature in Scotland.
-
-   Three main objectives :
-   1. Modelling with Bayesian Hierarchical spatio-temporal temperatures across scotland (until 2023)
-   2. Evaluating model performance by comparing forecast temperature value in 2024 vs observed data
-   3. Generate probabilistic temperature projections for the next 5 years (using datasets until 2024)
+Datasets used:
+- Core NetCDF: ds_scotland.nc
+      - raw temperature: tmp
+      - anomaly (either provided as anom or re-derived from tmp in Python for consistency) : anom
+      - coordinates: lat, lon
+      - time: monthly, 1901–2024
+- Derived analysis table: long-format panel data with one row per (cell, month)
    
-   Datasets/features : Temperature, Long, Lat, Time
-   
-   Preprocessing : Monthly temperature observations will be used to preserve temporal resolution and explicitly capture seasonal variability, which represents a key component of climate dynamics in Scotland. The available dataset spans the period 1901–2023, providing a long historical record suitable for analysing both long-term warming trends and intra-annual seasonal patterns. However, given the extensive temporal coverage and high spatial resolution of the data, it is not immediately clear whether the full dataset should be used for modelling. Therefore, an initial exploratory data analysis (EDA) will be conducted to examine the distributional characteristics of temperature at both annual and monthly scales, assess temporal stability and variability, and evaluate computational feasibility. This exploratory stage will inform decisions regarding the appropriate temporal window and spatial grid resolution to be included in the Bayesian hierarchical spatio-temporal framework. The final model will aim to capture temperature trends alongside spatially heterogeneous regional patterns across Scotland while accounting for seasonal effects and temporal dependence.
-
+Preprocessing :
+1. Read NetCDF and align time
+   - Load tmp (raw temperature) and grid/time metadata.
+   - Ensure monthly time index exists and is correctly mapped to layers
+   - Keep only grid cells whose centroids fall inside Scotland boundary
+2. Convert raw temperature to anomalies in Python using climatology window of 1961–1990 (WMO), computed per grid cell so spatial differences in mean climate are removed before modelling. Missing cells (sea/outside Scotland) are kept as NaN.
+3. Export the dataset into ds_scotland.nc containing tmp, anom, lon, lat, and time
+4. Convert the data to long format in R and remove invalid/non-Scotland grids (sea / outside mask)
+5. Create model indices
+   - space_id = integer id per remaining cell
+   - time_id = integer month index (1…T)
+   - Data split:
+        - Train: 1901–2020
+        - Test: 2021–2024
+6. Construct spatial adjacency for BYM2
+   - Define neighbours (rook/queen adjacency)
+   - Build adjacency matrix
+   - Convert to INLA graph object
+7. Fit all proposed models
+8. Model evaluation
 
 To do:
 (Max and Jackson):
--do same with frequentist model (and maybe deterministic too). use anomoly data and regular data like was done with bayesian
+-do same with frequentist model (and maybe deterministic too). use anomaly data and regular data like was done with bayesian
 -try to fix the interaction term in bayesian model
 -look for papers to cite
