@@ -23,6 +23,6 @@ Question ideas:
 
 To do:
 (Max and Jackson):
--do same with frequentist model (and maybe deterministic too)
+-do same with frequentist model (and maybe deterministic too). use anomoly data and regular data like was done with bayesian
 -try to fix the interaction term in bayesian model
 -look for papers to cite
