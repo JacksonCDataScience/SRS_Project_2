@@ -25,3 +25,4 @@ To do:
 (Max and Jackson):
 -do same with frequentist model (and maybe deterministic too)
 -try to fix the interaction term in bayesian model
+-look for papers to cite
