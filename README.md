@@ -51,7 +51,8 @@ Preprocessing :
 
 To do:
 - (Max and Jackson):
-   - do same with frequentist model (and maybe deterministic too). use anomaly data and regular data like was done with bayesian
+   - do same with frequentist model. use anomaly data and regular data like was done with bayesian - Done
+   - (and maybe do same with deterministic too - climatology avg. 1961-1990). make chart like wind speed 
    - try to fix the interaction term in bayesian model
    - look for papers to cite
 - (Fe and Nurma):
