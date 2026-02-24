@@ -17,16 +17,16 @@ Objectives :
    - Baseline + trend + spatial + space–time interaction
 3. Add frequentist/deterministic models for comparison
 4. Compare models using:
-      Bayesian: WAIC, DIC
-      Predictive: MAE and RMSE on a held-out period (test 2021–2024; train 1901–2020)
+   - Bayesian: WAIC, DIC
+   - Predictive: MAE and RMSE on a held-out period (test 2021–2024; train 1901–2020)
 
 Datasets used:
-- Core NetCDF: ds_scotland.nc
-      - raw temperature: tmp
-      - anomaly (either provided as anom or re-derived from tmp in Python for consistency) : anom
-      - coordinates: lat, lon
-      - time: monthly, 1901–2024
-- Derived analysis table: long-format panel data with one row per (cell, month)
+1. Core NetCDF: ds_scotland.nc
+   - raw temperature: tmp
+   - temperature anomaly relative to climatology baseline: anom
+   - coordinates: lon, lat
+   - monthly time 1901–2024: time
+2. Derived analysis table: long-format panel data with one row per (cell, month)
    
 Preprocessing :
 1. Read NetCDF and align time
@@ -50,7 +50,9 @@ Preprocessing :
 8. Model evaluation
 
 To do:
-(Max and Jackson):
--do same with frequentist model (and maybe deterministic too). use anomaly data and regular data like was done with bayesian
--try to fix the interaction term in bayesian model
--look for papers to cite
+- (Max and Jackson):
+   - do same with frequentist model (and maybe deterministic too). use anomaly data and regular data like was done with bayesian
+   - try to fix the interaction term in bayesian model
+   - look for papers to cite
+- (Fe and Nurma):
+   - look for papers to cite
