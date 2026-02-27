@@ -127,14 +127,17 @@ df <- df[cell %in% cell_ok]
 df[, area_id := as.integer(factor(cell))]
 
 # ----------------------------
-# B) Train/test split + create df_inla for prediction
+# B) Train/validation/test split + create df_inla for prediction
 # ----------------------------
-df[, set := fifelse(year <= 2020, "train", "test")]
+# !!!!! this was taking an incredibly long time to run for all the data, so for refinement purposes, we used only 1961 onward
+# df <- df[year >= 1961]
+df[, set := fifelse(year < 2000, "train",
+             fifelse(year <= 2011, "validation", "test"))]
 
 df_truth <- copy(df)  # keep the true observations for scoring
 
 df_inla <- copy(df)
-df_inla[set == "test", y_obs := NA_real_]  # hold out
+df_inla[set != "train", y_obs := NA_real_]  # hold out
 
 S <- max(df_inla$area_id)
 
@@ -208,7 +211,7 @@ g <- inla.read.graph(graph_file)
 
 # ----------------------------
 # D) Fit models (Gaussian anomalies)
-# IMPORTANT: fit on df_inla (train+test with NA) so fitted values align for RMSE
+# IMPORTANT: fit on df_inla (train+validation+test with NA) so fitted values align for RMSE
 # ----------------------------
 ctrl_pred <- list(compute = TRUE, link = 1)
 ctrl_comp <- list(dic = TRUE, waic = TRUE, cpo = FALSE)
@@ -315,19 +318,19 @@ get_metrics <- function(mod){
   )
 }
 
-# Generic scorer for test set
-score_test <- function(mod, df_inla, df_truth){
-  idx_test <- which(df_inla$set == "test")
+# Generic scorer for validation set
+score_validation <- function(mod, df_inla, df_truth){
+  idx_validation <- which(df_inla$set == "test")
 
   # For Gaussian + identity link:
-  pred  <- mod$summary.linear.predictor$mean[idx_test]
-  truth <- df_truth$y_obs[idx_test]
+  pred  <- mod$summary.linear.predictor$mean[idx_validation]
+  truth <- df_truth$y_obs[idx_validation]
 
   ok <- !is.na(truth) & !is.na(pred)
   pred <- pred[ok]; truth <- truth[ok]
 
   data.table(
-    n_test = length(truth),
+    n_validation = length(truth),
     RMSE = sqrt(mean((pred - truth)^2)),
     MAE  = mean(abs(pred - truth))
   )
@@ -339,17 +342,17 @@ metrics <- rbindlist(lapply(names(mods), function(nm){
   cbind(model = nm, get_metrics(mods[[nm]]))
 }))
 
-test_scores <- rbindlist(lapply(names(mods), function(nm){
-  cbind(model = nm, score_test(mods[[nm]], df_inla, df_truth))
+validation_scores <- rbindlist(lapply(names(mods), function(nm){
+  cbind(model = nm, score_validation(mods[[nm]], df_inla, df_truth))
 }))
 
 print(metrics[order(WAIC)])
-print(test_scores[order(RMSE)])
+print(validation_scores[order(RMSE)])
 
 # ----------------------------
 # Prefer the model that:
 # 1) has lower WAIC (and DIC broadly agrees),
-# 2) has lowest Test RMSE,
+# 2) has lowest validation RMSE,
 # 3) is stable (no weird hyperparameters; e.g., AR1 rho not stuck at ~1 with huge variance)
 #
 # Usually:
@@ -360,3 +363,134 @@ print(test_scores[order(RMSE)])
 # ---------- Plot posterior mean components ----------
 
 ```
+
+
+
+
+### Frequentist Approach
+
+Conduct SARIMA (Seasonal AutoRegressive Integrated Moving Average) forecast of anomoly data. This is a frequentist method used for time series forecasting that extends ARIMA (ARIMA combines autoregression (AR), differencing to achieve stationarity (I), and moving averages (MA) to predict future points in ordered, periodic data) while supporting trends in seasonality.
+
+```{r}
+# prepare data
+
+df[, y_obs := anomaly]
+
+df[, ym_date := as.Date(paste0(year, "-", month, "-01"))]
+
+df_train <- df[set == "train"]
+df_validation <- df[set == "validation"]
+df_test <- df[set == "test"]
+
+
+```
+
+
+```{r}
+library(forecast)
+library(lubridate)
+library(Metrics)
+
+# list to store forecasts
+forecast_list <- list()
+
+# loop over area_id (to fit a model for each grid point, capturing spatial aspect of our data)
+for(aid in unique(df$area_id)) {
+  
+  # subset for this area
+  df_cell <- df_train[area_id == aid]
+  setorder(df_cell, ym_date) # ensure data sorted in chronological order from earliest to latest month
+  
+  # convert to monthly time series that SARIMA can use
+  ts_cell <- ts(df_cell$y_obs,
+                start = c(df_cell$year[1], df_cell$month[1]),
+                frequency = 12)  # monthly data
+  
+  # fit SARIMA automatically (auto automatically selects best SARIMA model based on AICc (corrected AIC) or BIC)
+  fit <- auto.arima(ts_cell, seasonal = TRUE)
+  
+  # forecast next 144 months (from January 2000 to December 2011)
+  fc <- forecast(fit, h = 144)
+  
+  # compute start_date first
+  start_date <- floor_date(max(df_cell$ym_date), "month") %m+% months(1)
+  # store forecasts with area_id
+  forecast_list[[as.character(aid)]] <- data.table(
+    area_id = aid,
+    date = seq(start_date, by = "month", length.out = 144),
+    forecast = as.numeric(fc$mean)
+)
+}
+
+# Combine all forecasts (forecasts are made by month and area id)
+df_forecast <- rbindlist(forecast_list)
+
+
+```
+
+
+```{r}
+# evaluate forecasts
+
+# note: RMSE and MAE work for SARIMA, but DIC and WAIC are only Bayesian evaluation metrics
+
+# ??!! there are zero negative forecasted values, but there are many negatives in the actually observed validation data. This seems weird
+
+df_eval <- merge(
+  df_forecast,
+  df_validation[, .(area_id, ym_date, y_obs)],
+  by.x = c("area_id", "date"),
+  by.y = c("area_id", "ym_date"),
+  all.x = TRUE
+)
+
+
+
+# evaluate RMSE and MAE
+
+df_eval_valid <- df_eval[!is.na("y_obs")]
+
+print(rmse(df_eval_valid$y_obs, df_eval_valid$forecast))
+print(mae(df_eval_valid$y_obs, df_eval_valid$forecast))
+
+
+```
+
+
+### Deterministic Approach
+
+Simply use the anomoly data up to 1999 and take averages by month and location. Use these to "predict" the data in 2000-2011. So compute climatology for each location using the average of months across all our years.
+
+*evaluate on test set only with the final model we decide to use
+
+
+```{r}
+library(dplyr)
+
+
+# get average of anomolys by month and location
+
+df_avg <- df_train %>%
+  group_by(month, area_id) %>%
+  summarise(forecast = mean(y_obs, na.rm = TRUE)) %>%
+  ungroup()
+
+
+df_eval_deterministic <- merge(
+  df_avg,
+  df_validation[, .(area_id, month, y_obs)],
+  by.x = c("area_id", "month"),
+  by.y = c("area_id", "month"),
+  all.x = TRUE
+)
+
+# evaluate MAE and RMSE
+
+df_eval_valid <- df_eval_deterministic[!is.na("y_obs")]
+
+print(rmse(df_eval_valid$y_obs, df_eval_valid$forecast))
+print(mae(df_eval_valid$y_obs, df_eval_valid$forecast))
+
+
+```
+
