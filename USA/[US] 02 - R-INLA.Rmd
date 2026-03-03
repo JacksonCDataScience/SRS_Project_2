@@ -62,14 +62,23 @@ The model decomposes temperature variability into: long-term temporal trend, spa
 #### R Code
 ```{r}
 # ============================================================
-# Scotland monthly grid anomalies (NetCDF) -> INLA models
-# - Handles ocean/outside-domain NaNs properly
-# - Uses anomaly as response (recommended)
-# - Train: 1901–2020, Test: 2021–2024 (held out as NA for prediction)
-# - Models:
-#   M0: baseline
-#   M1: baseline + AR1 short-term + RW2 trend
-#   M2: baseline + AR1 short-term + RW2 trend + BYM2 spatial
+# INLA Spatio-temporal model for monthly TEMPERATURE (tmp)
+# + covariates: elevation + distance-to-coast (static)
+#
+# INPUTS (stable setup):
+#   - ds_usa.nc      : NetCDF containing ONLY tmp (time-varying), subds="tmp"
+#   - elev_usa.tif   : 1-layer elevation (will be aligned to tmp grid)
+#   - d2c_usa.tif    : 1-layer distance-to-coast (will be aligned to tmp grid)
+#
+# Key fix:
+#   ✅ Merge covariates by (lon,lat) coordinates (not by "cell") to avoid cell-index mismatch.
+#
+# Train: <=2020
+# Test : 2021–2024 held out (NA) for prediction
+# Models:
+#   M0: fixed effects only (elev + d2c)
+#   M1: + RW2 trend + AR1 replicated by area
+#   M2: + BYM2 spatial
 # ============================================================
 
 library(terra)
@@ -78,81 +87,126 @@ library(spdep)
 library(INLA)
 
 # ----------------------------
-# A) Read NetCDF + build long table (cell x month)
+# 0) INPUT FILES
 # ----------------------------
-r_anom <- rast("ds_scotland.nc", subds = "anom")
-r_tmp  <- rast("ds_scotland.nc", subds = "tmp")
+nc_file   <- "ds_usa.nc"
+elev_file <- "elev_usa.tif"
+d2c_file  <- "d2c_usa.tif"
 
-tt <- time(r_anom)
-if (is.null(tt)) {
-  tt <- seq(as.Date("1901-01-01"), by = "month", length.out = nlyr(r_anom))
+# If your tmp does NOT start at 1901-01, change this:
+start_date <- as.Date("1981-01-01")
+
+# ----------------------------
+# A) Read rasters
+# ----------------------------
+r_tmp <- rast(nc_file, subds = "tmp")
+stopifnot(inherits(r_tmp, "SpatRaster"))
+stopifnot(nlyr(r_tmp) >= 2)
+
+ref <- r_tmp[[1]]
+if (is.na(crs(ref))) stop("tmp raster has no CRS; cannot align covariates safely.")
+
+r_elev <- rast(elev_file)
+r_d2c  <- rast(d2c_file)
+
+# Align covariates to tmp grid (same CRS + same resolution/extent)
+if (!same.crs(r_elev, ref)) r_elev <- project(r_elev, ref)
+r_elev <- resample(r_elev, ref, method = "bilinear")
+r_elev <- r_elev[[1]]
+
+if (!same.crs(r_d2c, ref)) r_d2c <- project(r_d2c, ref)
+r_d2c <- resample(r_d2c, ref, method = "bilinear")
+r_d2c <- r_d2c[[1]]
+
+# ----------------------------
+# A1) Time labels for tmp layers
+# ----------------------------
+tt <- time(r_tmp)
+if (is.null(tt) || !inherits(tt, "Date") || length(tt) != nlyr(r_tmp)) {
+  tt <- seq(start_date, by = "month", length.out = nlyr(r_tmp))
 }
-time(r_anom) <- tt
-time(r_tmp)  <- tt
-
-df_anom <- as.data.frame(r_anom, xy = TRUE, cells = TRUE, na.rm = FALSE)
-df_tmp  <- as.data.frame(r_tmp,  xy = TRUE, cells = TRUE, na.rm = FALSE)
-
 layer_dates <- format(tt, "%Y-%m")
-setnames(df_anom, old = names(df_anom)[-(1:3)], new = layer_dates)
-setnames(df_tmp,  old = names(df_tmp)[-(1:3)],  new = layer_dates)
-
-dtA <- melt(as.data.table(df_anom),
-            id.vars = c("cell","x","y"),
-            variable.name = "ym", value.name = "anomaly")
-
-dtT <- melt(as.data.table(df_tmp),
-            id.vars = c("cell","x","y"),
-            variable.name = "ym", value.name = "tmp")
-
-df <- merge(dtA, dtT, by = c("cell","x","y","ym"), all = TRUE)
-setnames(df, old = c("x","y"), new = c("lon","lat"))
-
-df[, year  := as.integer(substr(ym, 1, 4))]
-df[, month := as.integer(substr(ym, 6, 7))]
-
-# stable time index (use sorted unique ym)
-ym_levels <- sort(unique(df$ym))
-df[, t_id := match(ym, ym_levels)]
-
-df[, y_obs := anomaly]  # response variable
+names(r_tmp) <- layer_dates
 
 # ----------------------------
-# A2) Domain filtering: remove cells (NA for ALL months)
+# A2) Build long table (cell x month)
 # ----------------------------
-cell_ok <- df[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
-df <- df[cell %in% cell_ok]
+df_tmp <- as.data.frame(r_tmp, xy = TRUE, cells = TRUE, na.rm = FALSE)
 
-# Re-index spatial id AFTER filtering
-df[, area_id := as.integer(factor(cell))]
+dt <- melt(as.data.table(df_tmp),
+           id.vars = c("cell","x","y"),
+           variable.name = "ym", value.name = "tmp")
 
-# ----------------------------
-# B) Train/validation/test split + create df_inla for prediction
-# ----------------------------
-# !!!!! this was taking an incredibly long time to run for all the data, so for refinement purposes, we used only 1961 onward
-# df <- df[year >= 1961]
-df[, set := fifelse(year < 2000, "train",
-             fifelse(year <= 2011, "validation", "test"))]
+setnames(dt, old = c("x","y"), new = c("lon","lat"))
 
-df_truth <- copy(df)  # keep the true observations for scoring
+dt[, year  := as.integer(substr(ym, 1, 4))]
+dt[, month := as.integer(substr(ym, 6, 7))]
 
-df_inla <- copy(df)
-df_inla[set != "train", y_obs := NA_real_]  # hold out
+ym_levels <- sort(unique(dt$ym))
+dt[, t_id := match(ym, ym_levels)]
 
-S <- max(df_inla$area_id)
-
-# space-time iid index (kept in case you use it later)
-df_inla[, st_iid := (t_id - 1L) * S + area_id]
-
-# ---- NEW: AR(1) index (replicated by area) ----
-# Use a separate name to avoid confusion with RW2 index
-df_inla[, t_ar := t_id]
+# response
+dt[, y_obs := tmp]
 
 # ----------------------------
-# C) Build adjacency graph for filtered grid
-#    Make rook adjacency on full lattice, then map to area_id and drop NA cells.
+# A3) Domain filter: keep only cells with at least one observed month
 # ----------------------------
-cells <- unique(df_inla[, .(area_id, lon, lat)])
+cell_ok <- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
+dt <- dt[cell %in% cell_ok]
+
+# ----------------------------
+# A4) Add covariates (MERGE BY lon/lat)
+# ----------------------------
+df_elev <- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)  # x y value
+df_d2c  <- as.data.frame(r_d2c,  xy = TRUE, na.rm = FALSE)
+
+# convert to data.table BEFORE using :=
+df_elev <- as.data.table(df_elev)
+df_d2c  <- as.data.table(df_d2c)
+
+# rename value columns safely (3rd column is value)
+setnames(df_elev, names(df_elev)[3], "elev")
+setnames(df_d2c,  names(df_d2c)[3],  "dist_to_coast")
+
+# round coords to avoid floating-point join issues
+df_elev[, `:=`(x = round(x, 6), y = round(y, 6))]
+df_d2c[,  `:=`(x = round(x, 6), y = round(y, 6))]
+dt[,      `:=`(lon = round(lon, 6), lat = round(lat, 6))]
+
+# merge covariates then join to dt
+covs_xy <- merge(df_elev, df_d2c, by = c("x", "y"), all = TRUE)
+dt <- merge(dt, covs_xy, by.x = c("lon","lat"), by.y = c("x","y"), all.x = TRUE)
+
+# drop rows missing covariates (avoid silent drops inside INLA)
+dt <- dt[!is.na(elev) & !is.na(dist_to_coast)]
+
+# scale covariates
+dt[, elev_sc := as.numeric(scale(elev))]
+dt[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
+
+# ----------------------------
+# A5) Re-index spatial id AFTER all filtering
+# ----------------------------
+stopifnot(nrow(dt) > 0)
+dt[, area_id := as.integer(factor(cell))]
+
+# ----------------------------
+# B) Train/test split + prediction frame
+# ----------------------------
+dt[, set := fifelse(year <= 2020, "train", "test")]
+
+dt_truth <- copy(dt)
+
+dt_inla <- copy(dt)
+dt_inla[set == "test", y_obs := NA_real_]
+
+S <- max(dt_inla$area_id)
+dt_inla[, t_ar := t_id]  # AR1 index replicated by area
+
+# ----------------------------
+# C) Adjacency graph (rook) for filtered grid
+# ----------------------------
+cells <- unique(dt_inla[, .(area_id, lon, lat)])
 setorder(cells, lat, lon)
 
 ux <- sort(unique(cells$lon))
@@ -165,172 +219,95 @@ cells[, row := match(lat, uy)]
 
 mat <- matrix(NA_integer_, nrow = nrow, ncol = ncol)
 mat[cbind(cells$row, cells$col)] <- cells$area_id
-
-# lattice index -> area_id (or NA)
 idx_to_area <- as.vector(mat)
 
-# rook adjacency on the FULL lattice (indices 1..(nrow*ncol))
 nb_full <- cell2nb(nrow, ncol, type = "rook")
-
-# Build nb list in AREA-ID space (1..S)
 nb_area <- vector("list", length = S)
 
 for (idx in seq_along(nb_full)) {
   a <- idx_to_area[idx]
   if (is.na(a)) next
-
-  neigh_idx <- nb_full[[idx]]
+  neigh_idx  <- nb_full[[idx]]
   neigh_area <- idx_to_area[neigh_idx]
   neigh_area <- neigh_area[!is.na(neigh_area)]
-  neigh_area <- sort(unique(as.integer(neigh_area)))
-
-  nb_area[[a]] <- neigh_area
+  nb_area[[a]] <- sort(unique(as.integer(neigh_area)))
 }
-
-# ensure no NULL entries (INLA graph writer likes integer(0))
 for (i in seq_len(S)) if (is.null(nb_area[[i]])) nb_area[[i]] <- integer(0)
 
 write_inla_graph <- function(nb, file) {
   S <- length(nb)
   con <- file(file, open = "wt")
   on.exit(close(con), add = TRUE)
-
   writeLines(as.character(S), con)
   for (i in seq_len(S)) {
     neigh <- nb[[i]]
     if (is.null(neigh)) neigh <- integer(0)
     neigh <- sort(unique(as.integer(neigh)))
-    line <- paste(c(i, length(neigh), neigh), collapse = " ")
-    writeLines(line, con)
+    writeLines(paste(c(i, length(neigh), neigh), collapse = " "), con)
   }
 }
 
-graph_file <- file.path(tempdir(), "scotland_grid.graph")
+graph_file <- file.path(tempdir(), "usa_grid.graph")
 write_inla_graph(nb_area, graph_file)
 g <- inla.read.graph(graph_file)
 
 # ----------------------------
-# D) Fit models (Gaussian anomalies)
-# IMPORTANT: fit on df_inla (train+validation+test with NA) so fitted values align for RMSE
+# D) Fit INLA models (Gaussian)
 # ----------------------------
 ctrl_pred <- list(compute = TRUE, link = 1)
 ctrl_comp <- list(dic = TRUE, waic = TRUE, cpo = FALSE)
-ctrl_fxd  <- list(mean = list("(Intercept)" = 0),
-                  prec = list("(Intercept)" = 1/100))  # var=100
+ctrl_fxd  <- list(
+  mean = list("(Intercept)" = 0),
+  prec = list("(Intercept)" = 1/100)   # var=100
+)
 
-# M0: baseline
+# M0: fixed effects only
 m0 <- inla(
-  y_obs ~ 1,
-  data = df_inla, family = "gaussian",
+  y_obs ~ 1 + elev_sc + d2c_sc,
+  data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-# M1: baseline + AR1 short-term + RW2 trend
-# - RW2 gives a smooth long-term temporal trend shared across space
-# - AR1 (replicate=area_id) gives cell-specific short-term persistence
+# M1: + RW2 trend + AR1 replicated by area
 m1 <- inla(
-  y_obs ~ 1 +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = "rw2", constr = TRUE) +
     f(t_ar, model = "ar1", replicate = area_id),
-  data = df_inla, family = "gaussian",
+  data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-# M2: baseline + AR1 short-term + RW2 trend + BYM2 spatial
+# M2: + BYM2 spatial
 m2 <- inla(
-  y_obs ~ 1 +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = "rw2", constr = TRUE) +
     f(t_ar, model = "ar1", replicate = area_id) +
     f(area_id, model = "bym2", graph = g, scale.model = TRUE, constr = TRUE),
-  data = df_inla, family = "gaussian",
+  data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
-
-# ALL INTERACTION MODELS ARE STILL ERROR----------------------------------------
-# M3a - time varying spatial field
-#df_inla[, area_tv := area_id]
-
-#m3_tvsp_ar1 <- inla(
-#  y_obs ~ 1 +
-#    f(t_id, model="rw2") +
-#    f(area_tv, model="besag", graph=g, group = t_id,
-#      control.group = list(model="ar1")),
-#  data=df_inla, family="gaussian",
-#  control.fixed=ctrl_fxd,
-#  control.predictor=ctrl_pred,
-#  control.compute=ctrl_comp,
-#)
-
-# M3b space X time interaction with random slope per area (space-specific trend)
-# df_inla[, t_center := t_id - mean(t_id)]
-# df_inla[, area_slope := area_id]
-
-#m3_slope <- inla(
-#  y_obs ~ 1 +
-#    f(t_id, model="rw2") +
-#    f(area_id, model="bym2", graph=g, scale.model=TRUE) +
-#    f(area_id, t_center, model="iid"),  # random slope
-#  data=df_inla, family="gaussian",
-#  control.fixed=ctrl_fxd,
-#  control.predictor=ctrl_pred,
-#  control.compute=ctrl_comp,
-#)
-
-# ---- Time-varying spatial interaction (SUPPORTED approach)
-# Use a structured interaction: Besag evolving in time (group RW1 / AR1)
-# (bym2 + group is often not supported; besag + group is)
-#df_inla[, area_tv := area_id]
-
-# explicit index for clarity
-#m3_tvsp_rw1 <- inla(y_obs ~ 1 +
-#                      f(t_id, model = "rw2") +
-#                      f(area_id, model = "bym2", graph = g, scale.model = TRUE) +
-#                      f(area_tv, model = "besag", graph = g, group = t_id,
-#                        control.group = list(model = "rw1")),
-#                    data = df_inla, family = "gaussian",
-#                    control.fixed = ctrl_fxd,
-#                    control.predictor = ctrl_pred,
-#                    control.compute = ctrl_comp)
-
-#m3_tvsp_ar1 <- inla(y_obs ~ 1 +
-#                      f(t_id, model = "rw2") +
-#                      f(area_id, model = "bym2", graph = g, scale.model = TRUE) +
-#                      f(area_tv, model = "besag", graph = g, group = t_id,
-#                        control.group = list(model = "ar1")),
-#                    data = df_inla, family = "gaussian",
-#                    control.fixed = ctrl_fxd,
-#                    control.predictor = ctrl_pred,
-#                    control.compute = ctrl_comp)
 
 # ----------------------------
 # E) Compare WAIC/DIC + Test RMSE (2021–2024)
 # ----------------------------
 get_metrics <- function(mod){
-  data.table(
-    DIC  = mod$dic$dic,
-    WAIC = mod$waic$waic
-  )
+  data.table(DIC = mod$dic$dic, WAIC = mod$waic$waic)
 }
 
-# Generic scorer for validation set
-score_validation <- function(mod, df_inla, df_truth){
-  idx_validation <- which(df_inla$set == "test")
-
-  # For Gaussian + identity link:
-  pred  <- mod$summary.linear.predictor$mean[idx_validation]
-  truth <- df_truth$y_obs[idx_validation]
-
+score_test <- function(mod, dt_inla, dt_truth){
+  idx_test <- which(dt_inla$set == "test")
+  pred  <- mod$summary.linear.predictor$mean[idx_test]
+  truth <- dt_truth$y_obs[idx_test]
   ok <- !is.na(truth) & !is.na(pred)
   pred <- pred[ok]; truth <- truth[ok]
-
   data.table(
-    n_validation = length(truth),
+    n_test = length(truth),
     RMSE = sqrt(mean((pred - truth)^2)),
     MAE  = mean(abs(pred - truth))
   )
@@ -341,156 +318,14 @@ mods <- list(M0 = m0, M1 = m1, M2 = m2)
 metrics <- rbindlist(lapply(names(mods), function(nm){
   cbind(model = nm, get_metrics(mods[[nm]]))
 }))
-
-validation_scores <- rbindlist(lapply(names(mods), function(nm){
-  cbind(model = nm, score_validation(mods[[nm]], df_inla, df_truth))
+test_scores <- rbindlist(lapply(names(mods), function(nm){
+  cbind(model = nm, score_test(mods[[nm]], dt_inla, dt_truth))
 }))
 
 print(metrics[order(WAIC)])
-print(validation_scores[order(RMSE)])
+print(test_scores[order(RMSE)])
 
-# ----------------------------
-# Prefer the model that:
-# 1) has lower WAIC (and DIC broadly agrees),
-# 2) has lowest validation RMSE,
-# 3) is stable (no weird hyperparameters; e.g., AR1 rho not stuck at ~1 with huge variance)
-#
-# Usually:
-# - If M3_tvsp_ar1 improves RMSE and WAIC: pick it (persistent spatial evolution).
-# - If AR1 becomes unstable or barely improves: pick M3_tvsp_rw1 (smoother, often more stable).
-# - If neither improves much: keep M2 (interpretable + parsimonious).
-
-# ---------- Plot posterior mean components ----------
-
-```
-
-
-
-
-### Frequentist Approach
-
-Conduct SARIMA (Seasonal AutoRegressive Integrated Moving Average) forecast of anomoly data. This is a frequentist method used for time series forecasting that extends ARIMA (ARIMA combines autoregression (AR), differencing to achieve stationarity (I), and moving averages (MA) to predict future points in ordered, periodic data) while supporting trends in seasonality.
-
-```{r}
-# prepare data
-
-df[, y_obs := anomaly]
-
-df[, ym_date := as.Date(paste0(year, "-", month, "-01"))]
-
-df_train <- df[set == "train"]
-df_validation <- df[set == "validation"]
-df_test <- df[set == "test"]
-
-
-```
-
-
-```{r}
-library(forecast)
-library(lubridate)
-library(Metrics)
-
-# list to store forecasts
-forecast_list <- list()
-
-# loop over area_id (to fit a model for each grid point, capturing spatial aspect of our data)
-for(aid in unique(df$area_id)) {
-  
-  # subset for this area
-  df_cell <- df_train[area_id == aid]
-  setorder(df_cell, ym_date) # ensure data sorted in chronological order from earliest to latest month
-  
-  # convert to monthly time series that SARIMA can use
-  ts_cell <- ts(df_cell$y_obs,
-                start = c(df_cell$year[1], df_cell$month[1]),
-                frequency = 12)  # monthly data
-  
-  # fit SARIMA automatically (auto automatically selects best SARIMA model based on AICc (corrected AIC) or BIC)
-  fit <- auto.arima(ts_cell, seasonal = TRUE)
-  
-  # forecast next 144 months (from January 2000 to December 2011)
-  fc <- forecast(fit, h = 144)
-  
-  # compute start_date first
-  start_date <- floor_date(max(df_cell$ym_date), "month") %m+% months(1)
-  # store forecasts with area_id
-  forecast_list[[as.character(aid)]] <- data.table(
-    area_id = aid,
-    date = seq(start_date, by = "month", length.out = 144),
-    forecast = as.numeric(fc$mean)
-)
-}
-
-# Combine all forecasts (forecasts are made by month and area id)
-df_forecast <- rbindlist(forecast_list)
-
-
-```
-
-
-```{r}
-# evaluate forecasts
-
-# note: RMSE and MAE work for SARIMA, but DIC and WAIC are only Bayesian evaluation metrics
-
-# ??!! there are zero negative forecasted values, but there are many negatives in the actually observed validation data. This seems weird
-
-df_eval <- merge(
-  df_forecast,
-  df_validation[, .(area_id, ym_date, y_obs)],
-  by.x = c("area_id", "date"),
-  by.y = c("area_id", "ym_date"),
-  all.x = TRUE
-)
-
-
-
-# evaluate RMSE and MAE
-
-df_eval_valid <- df_eval[!is.na("y_obs")]
-
-print(rmse(df_eval_valid$y_obs, df_eval_valid$forecast))
-print(mae(df_eval_valid$y_obs, df_eval_valid$forecast))
-
-
-```
-
-
-### Deterministic Approach
-
-Simply use the anomoly data up to 1999 and take averages by month and location. Use these to "predict" the data in 2000-2011. So compute climatology for each location using the average of months across all our years.
-
-*evaluate on test set only with the final model we decide to use
-
-
-```{r}
-library(dplyr)
-
-
-# get average of anomolys by month and location
-
-df_avg <- df_train %>%
-  group_by(month, area_id) %>%
-  summarise(forecast = mean(y_obs, na.rm = TRUE)) %>%
-  ungroup()
-
-
-df_eval_deterministic <- merge(
-  df_avg,
-  df_validation[, .(area_id, month, y_obs)],
-  by.x = c("area_id", "month"),
-  by.y = c("area_id", "month"),
-  all.x = TRUE
-)
-
-# evaluate MAE and RMSE
-
-df_eval_valid <- df_eval_deterministic[!is.na("y_obs")]
-
-print(rmse(df_eval_valid$y_obs, df_eval_valid$forecast))
-print(mae(df_eval_valid$y_obs, df_eval_valid$forecast))
-
-
+# fixed effects summary
+print(m2$summary.fixed)
 ```
 
