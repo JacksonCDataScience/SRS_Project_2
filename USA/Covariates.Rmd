@@ -15,8 +15,8 @@ knitr::opts_chunk$set(echo = TRUE)
 library(terra)
 library(data.table)
 
-r_tmp  <- rast("us_temp.nc", subds = "tmp")
-r_d2c <- rast("us_temp.nc", subds = "distance_to_coast")
+r_anom  <- rast("ds_us.nc", subds = "anom")
+r_d2c <- rast("ds_us.nc", subds = "distance_to_coast")
 
 ```
 
@@ -34,13 +34,13 @@ library(geodata)
 elev <- elevation_30s(country = "USA", path = "data/")
 plot(elev)
 
-elev_05deg <- resample(elev, r_tmp[[1]], method = "average")
+elev_05deg <- resample(elev, r_anom[[1]], method = "average")
 plot(elev_05deg)
 
 # combine layers of data
-r_all <- c(r_tmp, elev_05deg, r_d2c)
-names(r_all)[(nlyr(r_tmp)+1)] <- "elev"
-names(r_all)[(nlyr(r_tmp)+2)] <- "dist_to_coast"
+r_all <- c(r_anom, elev_05deg, r_d2c)
+names(r_all)[(nlyr(r_anom)+1)] <- "elev"
+names(r_all)[(nlyr(r_anom)+2)] <- "dist_to_coast"
 
 writeCDF(r_all, "ds_usa.nc", overwrite=TRUE)
 # covariates (static) to GeoTIFF
