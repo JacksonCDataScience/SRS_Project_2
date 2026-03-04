@@ -18,119 +18,139 @@ y_{s,t}
 =
 \mu
 +
+\beta_{1}\,\text{Elev}_s
++
+\beta_{2}\,\text{DistCoast}_s
++
 u_s
 +
 \delta(t)
 +
-\gamma_t
-+
-\epsilon_{s,t},
+\epsilon_{s,t}
 $$
 
 where:
 
-- $y_{s,t}$ denotes the observed temperature at spatial location $s$ and time $t$.
-
+- $y_{s,t}$ denotes the observed temperature anomaly at spatial location $s$ and time $t$.
 
 **Model Components**
 
 - **Global mean ($\mu$)**  
   Represents the overall average temperature level across all time periods and spatial locations.
 
+- **Elevation effect ($\beta_1 \text{Elev}_s$)**  
+  Captures the influence of elevation on temperature variability.  
+  Higher elevation areas are typically associated with lower temperatures.
+
+- **Distance-to-coast effect ($\beta_2 \text{DistCoast}_s$)**  
+  Represents the influence of proximity to the coastline.  
+  Coastal regions often experience moderated temperatures compared to inland areas.
+
 - **Smooth temporal trend ($\delta(t)$)**  
   Captures long-term climate evolution over time.  
   A second-order random walk (RW2) prior is used to allow a flexible, smooth nonlinear trend without imposing a strict linear structure.
-  
+
 - **Spatial structured effect ($u_s$)**  
   Models spatial dependence between neighbouring grid cells.  
   This component is specified using a Conditional Autoregressive (CAR) or BYM2 prior, allowing geographically nearby locations to exhibit similar temperature patterns.
 
-- **Temporal autocorrelation ($\gamma_t$)**  
-  Accounts for short-term persistence between consecutive observations.  
-  This component is modelled using an autoregressive process of order one (AR(1)).
-
 - **Observation error ($\epsilon_{s,t}$)**  
-  Represents unexplained variability, assumed to follow:
+  Represents unexplained variability, assumed to follow a Gaussian distribution:
 
 $$
-\epsilon_{s,t} \sim \mathcal{N}(0, \sigma^2).
+\epsilon_{s,t} \sim \mathcal{N}(0,\sigma_\epsilon^2)
 $$
 
+$$
+\epsilon_{s,t} \sim \mathcal{N}(0,\sigma_{\epsilon}^{2})
+$$
 
-The model decomposes temperature variability into: long-term temporal trend, spatial structure, short-term temporal dependence (?), and residual noise (?).
+The model decomposes temperature variability into covariate effects (elevation and distance to coast), a smooth long-term temporal trend, spatially structured variability across grid cells, and residual noise.
 
-#### R Code
+# RCode
+
+## (1) Load required packages  
+Here, we used package `terra` for raster/NetCDF handling, `data.table` for fast reshaping and joins, `spdep` for neighbourhood structure, and `INLA` for Bayesian inference. 
 ```{r}
-# ============================================================
-# INLA Spatio-temporal model for monthly TEMPERATURE (tmp)
-# + covariates: elevation + distance-to-coast (static)
-#
-# INPUTS (stable setup):
-#   - ds_usa.nc      : NetCDF containing ONLY tmp (time-varying), subds="tmp"
-#   - elev_usa.tif   : 1-layer elevation (will be aligned to tmp grid)
-#   - d2c_usa.tif    : 1-layer distance-to-coast (will be aligned to tmp grid)
-#
-# Key fix:
-#   ✅ Merge covariates by (lon,lat) coordinates (not by "cell") to avoid cell-index mismatch.
-#
-# Train: <=2020
-# Test : 2021–2024 held out (NA) for prediction
-# Models:
-#   M0: fixed effects only (elev + d2c)
-#   M1: + RW2 trend + AR1 replicated by area
-#   M2: + BYM2 spatial
-# ============================================================
-
 library(terra)
 library(data.table)
 library(spdep)
 library(INLA)
+```
 
-# ----------------------------
-# 0) INPUT FILES
-# ----------------------------
+
+## (2) Read Input Data for Pre & Processing
+Dataset used 
+(1) Monthly anomaly raster `anom` from `ds_usa.nc`.  
+(2) Static covariates from GeoTIFF:
+     - elevation (`elev_usa.tif`)
+     - distance to coast (`d2c_usa.tif`)
+(3) Preprocessing : Align covariates to the anomaly grid using CRS transformation and `resample() i.e. make standard spatial grid for both (covariates and anomalies)
+```{r}
+# (1) Input File ----------------------------------------------------------
 nc_file   <- "ds_usa.nc"
 elev_file <- "elev_usa.tif"
 d2c_file  <- "d2c_usa.tif"
 
-# ----------------------------
-# A) Read rasters
-# ----------------------------
+# (2) Input and Preprocessing Raster Data ---------------------------------
+# TEMPERATURE DATASETS ----------------------------------------------------
+# Load temperature anomaly data from NetCDF
+# 'anom' contains monthly anomaly layers (time-varying)
 r_anom <- rast(nc_file, subds = "anom")
-stopifnot(inherits(r_anom, "SpatRaster"))
-stopifnot(nlyr(r_anom) >= 2)
 
+# checking format r_anom
+stopifnot(inherits(r_anom, "SpatRaster")) #ensure r_anom is a SpatRaster
+stopifnot(nlyr(r_anom) >= 2) #ensure r_anom contains multiple layer
+
+# Get the first anomaly layer as the reference grid
 ref <- r_anom[[1]]
+# Check that ref has a coordinate reference system
 if (is.na(crs(ref))) stop("anom raster has no CRS; cannot align covariates safely.")
 
-r_elev <- rast(elev_file)
-r_d2c  <- rast(d2c_file)
+# COVARIATE DATASETS ----------------------------------------------------
+# Now, load the static covariates, elevation and distance to coast
+r_elev <- rast(elev_file) #elevation
+r_d2c  <- rast(d2c_file) #distance to coast
 
-# Align covariates to tmp grid (same CRS + same resolution/extent)
+# Adjust spatial grid covariates to temperature anomalies (same CRS & res)
+# Ensure elevation has the same coordinate reference system as the anomaly grid (use ref)
+# Reproject to match the reference raster if it's different
 if (!same.crs(r_elev, ref)) r_elev <- project(r_elev, ref)
+
+# Resample elevation so that its resolution and grid alignment
 r_elev <- resample(r_elev, ref, method = "bilinear")
+
+# get only single elevation layer
 r_elev <- r_elev[[1]]
 
+# Same procedure, but in distance to coast
 if (!same.crs(r_d2c, ref)) r_d2c <- project(r_d2c, ref)
 r_d2c <- resample(r_d2c, ref, method = "bilinear")
 r_d2c <- r_d2c[[1]]
 
-# ----------------------------------------
-# A1) Time labels for tmp anomalies layers
-# ----------------------------------------
+```
+
+# (3) Create a time index and label layers  
+- Build a monthly date sequence starting from `1961-01-01`
+- Assign layer names in `YYYY-MM` format for consistent reshaping  
+- Subset layers by year range using `keep_layers`
+```{r}
 full_start <- as.Date("1961-01-01")
 tt_full <- seq(full_start, by="month", length.out = nlyr(r_anom))
-
 keep_layers <- which(tt_full >= as.Date("1961-01-01")) #here to subset the years
-
 r_anom <- r_anom[[keep_layers]]
 tt <- tt_full[keep_layers]
-
 names(r_anom) <- format(tt, "%Y-%m")
+```
 
-# ----------------------------
-# A2) Build long table (cell x month)
-# ----------------------------
+
+# (4) Reshape data from raster to long format (cell × month) 
+- Convert raster to a wide data frame with `as.data.frame(..., cells=TRUE, xy=TRUE)`.  
+- Convert to long format using `melt()` into columns:
+- spatial identifiers (`cell`, `lon`, `lat`)
+- time identifier (`ym`, `t_id`)
+- response (`y_obs`)
+```{r}
 df_anom <- as.data.frame(r_anom, xy = TRUE, cells = TRUE, na.rm = FALSE)
 
 dt <- melt(as.data.table(df_anom),
@@ -147,16 +167,24 @@ dt[, t_id := match(ym, ym_levels)]
 
 # response
 dt[, y_obs := anom]
+```
 
-# ----------------------------
-# A3) Domain filter: keep only cells with at least one observed month
-# ----------------------------
+## (5) Filter valid spatial domain  
+Drop grid cells that are missing (`NA`) for **all months** to avoid including ocean/out-of-domain cells
+```{r}
 cell_ok <- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
 dt <- dt[cell %in% cell_ok]
+```
 
-# ----------------------------
-# A4) Add covariates (MERGE BY lon/lat)
-# ----------------------------
+## (6) Merge static covariates (robust join by coordinates) 
+- Convert elevation and distance-to-coast rasters to `(x,y,value)` tables.
+- Round coordinates to avoid floating-point mismatch.Coordinates were rounded to six decimal places in order to avoid floating-point precision issues during spatial joins. References : Pebesma, E. (2018). Simple Features for R: Standardized Support for Spatial Vector Data. R Journal 
+- Merge covariates into the long table using `(lon, lat)` join (not `cell`).  
+- Scale covariates:
+  - `elev_sc = scale(elev)`
+  - `d2c_sc = scale(log1p(dist_to_coast))`
+
+```{r}
 df_elev <- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)  # x y value
 df_d2c  <- as.data.frame(r_d2c,  xy = TRUE, na.rm = FALSE)
 
@@ -184,15 +212,20 @@ dt <- dt[!is.na(elev) & !is.na(dist_to_coast)]
 dt[, elev_sc := as.numeric(scale(elev))]
 dt[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
 
-# ----------------------------
-# A5) Re-index spatial id AFTER all filtering
-# ----------------------------
+# reindex spatial after filtering
 stopifnot(nrow(dt) > 0)
 dt[, area_id := as.integer(factor(cell))]
+```
 
-# ----------------------------
-# B) Train/test split + prediction frame
-# ----------------------------
+
+## (7) Create spatial index and train/test split 
+- Define spatial ID: `area_id = factor(cell)` after filtering
+- Split the datasets:
+  - Train: `year <= 2020`
+  - Test: `year > 2020`
+- Create `dt_inla` for prediction by setting `y_obs = NA` in the test set
+
+```{r}
 dt[, set := fifelse(year <= 2020, "train", "test")]
 
 dt_truth <- copy(dt)
@@ -201,13 +234,13 @@ dt_inla <- copy(dt)
 dt_inla[set == "test", y_obs := NA_real_]
 
 S <- max(dt_inla$area_id)
+```
 
-# AR1 index removed to increase computing performance
-#dt_inla[, t_ar := t_id]  # AR1 index replicated by area
-
-# ----------------------------
-# C) Adjacency graph (rook) for filtered grid
-# ----------------------------
+## (8) Construct spatial neighbourhood graph (using rook adjacency)  
+- Arrange cells on the grid using unique `lon/lat`  
+- Build rook adjacency using `cell2nb()` 
+- Convert to an INLA graph file and read it with `inla.read.graph()`
+```{r}
 cells <- unique(dt_inla[, .(area_id, lon, lat)])
 setorder(cells, lat, lon)
 
@@ -252,10 +285,19 @@ write_inla_graph <- function(nb, file) {
 graph_file <- file.path(tempdir(), "usa_grid.graph")
 write_inla_graph(nb_area, graph_file)
 g <- inla.read.graph(graph_file)
+```
 
-# ----------------------------
-# D) Fit INLA models (Gaussian)
-# ----------------------------
+## (9) Fit candidate INLA models (Gaussian likelihood)  
+- **M0:** intercept-only baseline  
+- **M1:** baseline + RW2 temporal trend  
+- **M2:** M1 + BYM2 spatial effect (graph-based)  
+- **M3:** M2 + covariates (`elev_sc`, `d2c_sc`)  
+All models are fitted as Gaussian:
+$$
+y_{s,t} \sim \mathcal{N}(\eta_{s,t}, \sigma_\epsilon^2).
+$$
+
+```{r}
 ctrl_pred <- list(compute = TRUE, link = 1)
 ctrl_comp <- list(dic = TRUE, waic = TRUE, cpo = FALSE)
 ctrl_fxd  <- list(
@@ -305,10 +347,17 @@ m3 <- inla(
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
+```
 
-# ----------------------------
-# E) Compare WAIC/DIC + Test RMSE (2021–2024)
-# ----------------------------
+## (10) Model comparison and predictive evaluation (2021–2024)**  
+- Compare models using:
+  - **WAIC**
+  - **DIC**
+- Compute test performance on the hold-out period using:
+  - **RMSE**
+  - **MAE**
+- Report fixed effects from the final covariate model via `summary.fixed`
+```{r}
 get_metrics <- function(mod){
   data.table(DIC = mod$dic$dic, WAIC = mod$waic$waic)
 }
