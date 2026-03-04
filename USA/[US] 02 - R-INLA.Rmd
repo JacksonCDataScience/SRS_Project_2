@@ -93,18 +93,15 @@ nc_file   <- "ds_usa.nc"
 elev_file <- "elev_usa.tif"
 d2c_file  <- "d2c_usa.tif"
 
-# If your tmp does NOT start at 1901-01, change this:
-start_date <- as.Date("1981-01-01")
-
 # ----------------------------
 # A) Read rasters
 # ----------------------------
-r_tmp <- rast(nc_file, subds = "tmp")
-stopifnot(inherits(r_tmp, "SpatRaster"))
-stopifnot(nlyr(r_tmp) >= 2)
+r_anom <- rast(nc_file, subds = "anom")
+stopifnot(inherits(r_anom, "SpatRaster"))
+stopifnot(nlyr(r_anom) >= 2)
 
-ref <- r_tmp[[1]]
-if (is.na(crs(ref))) stop("tmp raster has no CRS; cannot align covariates safely.")
+ref <- r_anom[[1]]
+if (is.na(crs(ref))) stop("anom raster has no CRS; cannot align covariates safely.")
 
 r_elev <- rast(elev_file)
 r_d2c  <- rast(d2c_file)
@@ -118,24 +115,27 @@ if (!same.crs(r_d2c, ref)) r_d2c <- project(r_d2c, ref)
 r_d2c <- resample(r_d2c, ref, method = "bilinear")
 r_d2c <- r_d2c[[1]]
 
-# ----------------------------
-# A1) Time labels for tmp layers
-# ----------------------------
-tt <- time(r_tmp)
-if (is.null(tt) || !inherits(tt, "Date") || length(tt) != nlyr(r_tmp)) {
-  tt <- seq(start_date, by = "month", length.out = nlyr(r_tmp))
-}
-layer_dates <- format(tt, "%Y-%m")
-names(r_tmp) <- layer_dates
+# ----------------------------------------
+# A1) Time labels for tmp anomalies layers
+# ----------------------------------------
+full_start <- as.Date("1961-01-01")
+tt_full <- seq(full_start, by="month", length.out = nlyr(r_anom))
+
+keep_layers <- which(tt_full >= as.Date("1961-01-01")) #here to subset the years
+
+r_anom <- r_anom[[keep_layers]]
+tt <- tt_full[keep_layers]
+
+names(r_anom) <- format(tt, "%Y-%m")
 
 # ----------------------------
 # A2) Build long table (cell x month)
 # ----------------------------
-df_tmp <- as.data.frame(r_tmp, xy = TRUE, cells = TRUE, na.rm = FALSE)
+df_anom <- as.data.frame(r_anom, xy = TRUE, cells = TRUE, na.rm = FALSE)
 
-dt <- melt(as.data.table(df_tmp),
+dt <- melt(as.data.table(df_anom),
            id.vars = c("cell","x","y"),
-           variable.name = "ym", value.name = "tmp")
+           variable.name = "ym", value.name = "anom")
 
 setnames(dt, old = c("x","y"), new = c("lon","lat"))
 
@@ -146,7 +146,7 @@ ym_levels <- sort(unique(dt$ym))
 dt[, t_id := match(ym, ym_levels)]
 
 # response
-dt[, y_obs := tmp]
+dt[, y_obs := anom]
 
 # ----------------------------
 # A3) Domain filter: keep only cells with at least one observed month
@@ -201,7 +201,9 @@ dt_inla <- copy(dt)
 dt_inla[set == "test", y_obs := NA_real_]
 
 S <- max(dt_inla$area_id)
-dt_inla[, t_ar := t_id]  # AR1 index replicated by area
+
+# AR1 index removed to increase computing performance
+#dt_inla[, t_ar := t_id]  # AR1 index replicated by area
 
 # ----------------------------
 # C) Adjacency graph (rook) for filtered grid
@@ -261,20 +263,21 @@ ctrl_fxd  <- list(
   prec = list("(Intercept)" = 1/100)   # var=100
 )
 
+inla.setOption(num.threads = 8) # setting thread to laptop cpu for faster work
+
 # M0: fixed effects only
 m0 <- inla(
-  y_obs ~ 1 + elev_sc + d2c_sc,
+  y_obs ~ 1 ,
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-# M1: + RW2 trend + AR1 replicated by area
+# M1: + RW2 trend
 m1 <- inla(
-  y_obs ~ 1 + elev_sc + d2c_sc +
-    f(t_id, model = "rw2", constr = TRUE) +
-    f(t_ar, model = "ar1", replicate = area_id),
+  y_obs ~ 1 +
+    f(t_id, model = "rw2", constr = TRUE),
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
@@ -283,9 +286,19 @@ m1 <- inla(
 
 # M2: + BYM2 spatial
 m2 <- inla(
+  y_obs ~ 1 +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(area_id, model = "bym2", graph = g, scale.model = TRUE, constr = TRUE),
+  data = dt_inla, family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+
+# M3: + covariates
+m3 <- inla(
   y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = "rw2", constr = TRUE) +
-    f(t_ar, model = "ar1", replicate = area_id) +
     f(area_id, model = "bym2", graph = g, scale.model = TRUE, constr = TRUE),
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
@@ -313,7 +326,7 @@ score_test <- function(mod, dt_inla, dt_truth){
   )
 }
 
-mods <- list(M0 = m0, M1 = m1, M2 = m2)
+mods <- list(M0 = m0, M1 = m1, M2 = m2, M3 = m3)
 
 metrics <- rbindlist(lapply(names(mods), function(nm){
   cbind(model = nm, get_metrics(mods[[nm]]))
@@ -326,6 +339,6 @@ print(metrics[order(WAIC)])
 print(test_scores[order(RMSE)])
 
 # fixed effects summary
-print(m2$summary.fixed)
+print(m3$summary.fixed)
 ```
 
