@@ -384,10 +384,12 @@ test_scores <- rbindlist(lapply(names(mods), function(nm){
   cbind(model = nm, score_test(mods[[nm]], dt_inla, dt_truth))
 }))
 
+summary(m0)
+summary(m1)
+summary(m2)
+summary(m3)
+
 print(metrics[order(WAIC)])
 print(test_scores[order(RMSE)])
-
-# fixed effects summary
-print(m3$summary.fixed)
 ```
 
