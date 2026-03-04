@@ -4,9 +4,9 @@ title: |
   <center> Group 6 </center>
 subtitle: School of Mathematics, University of Edinburgh
 output:
-  pdf_document: default
   html_document:
     df_print: paged
+  pdf_document: default
 ---
 
 ### Model Structure

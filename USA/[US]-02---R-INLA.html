@@ -1639,25 +1639,36 @@ y_{s,t}
 =
 \mu
 +
+\beta_{1}\,\text{Elev}_s
++
+\beta_{2}\,\text{DistCoast}_s
++
 u_s
 +
 \delta(t)
 +
-\gamma_t
-+
-\epsilon_{s,t},
+\epsilon_{s,t}
 \]</span></p>
 <p>where:</p>
 <ul>
 <li><span class="math inline">\(y_{s,t}\)</span> denotes the observed
-temperature at spatial location <span class="math inline">\(s\)</span>
-and time <span class="math inline">\(t\)</span>.</li>
+temperature anomaly at spatial location <span class="math inline">\(s\)</span> and time <span class="math inline">\(t\)</span>.</li>
 </ul>
 <p><strong>Model Components</strong></p>
 <ul>
 <li><p><strong>Global mean (<span class="math inline">\(\mu\)</span>)</strong><br />
 Represents the overall average temperature level across all time periods
 and spatial locations.</p></li>
+<li><p><strong>Elevation effect (<span class="math inline">\(\beta_1
+\text{Elev}_s\)</span>)</strong><br />
+Captures the influence of elevation on temperature variability.<br />
+Higher elevation areas are typically associated with lower
+temperatures.</p></li>
+<li><p><strong>Distance-to-coast effect (<span class="math inline">\(\beta_2
+\text{DistCoast}_s\)</span>)</strong><br />
+Represents the influence of proximity to the coastline.<br />
+Coastal regions often experience moderated temperatures compared to
+inland areas.</p></li>
 <li><p><strong>Smooth temporal trend (<span class="math inline">\(\delta(t)\)</span>)</strong><br />
 Captures long-term climate evolution over time.<br />
 A second-order random walk (RW2) prior is used to allow a flexible,
@@ -1668,43 +1679,30 @@ Models spatial dependence between neighbouring grid cells.<br />
 This component is specified using a Conditional Autoregressive (CAR) or
 BYM2 prior, allowing geographically nearby locations to exhibit similar
 temperature patterns.</p></li>
-<li><p><strong>Temporal autocorrelation (<span class="math inline">\(\gamma_t\)</span>)</strong><br />
-Accounts for short-term persistence between consecutive
-observations.<br />
-This component is modelled using an autoregressive process of order one
-(AR(1)).</p></li>
 <li><p><strong>Observation error (<span class="math inline">\(\epsilon_{s,t}\)</span>)</strong><br />
-Represents unexplained variability, assumed to follow:</p></li>
+Represents unexplained variability, assumed to follow a Gaussian
+distribution:</p></li>
 </ul>
 <p><span class="math display">\[
-\epsilon_{s,t} \sim \mathcal{N}(0, \sigma^2).
+\epsilon_{s,t} \sim \mathcal{N}(0,\sigma_\epsilon^2)
 \]</span></p>
-<p>The model decomposes temperature variability into: long-term temporal
-trend, spatial structure, short-term temporal dependence (?), and
-residual noise (?).</p>
-<div id="r-code" class="section level4">
-<h4>R Code</h4>
-<pre class="r"><code># ============================================================
-# INLA Spatio-temporal model for monthly TEMPERATURE (tmp)
-# + covariates: elevation + distance-to-coast (static)
-#
-# INPUTS (stable setup):
-#   - ds_usa.nc      : NetCDF containing ONLY tmp (time-varying), subds=&quot;tmp&quot;
-#   - elev_usa.tif   : 1-layer elevation (will be aligned to tmp grid)
-#   - d2c_usa.tif    : 1-layer distance-to-coast (will be aligned to tmp grid)
-#
-# Key fix:
-#   Merge covariates by (lon,lat) coordinates (not by &quot;cell&quot;) to avoid cell-index mismatch.
-#
-# Train: &lt;=2020
-# Test : 2021–2024 held out (NA) for prediction
-# Models:
-#   M0: fixed effects only (elev + d2c)
-#   M1: + RW2 trend + AR1 replicated by area
-#   M2: + BYM2 spatial
-# ============================================================
-
-library(terra)</code></pre>
+<p><span class="math display">\[
+\epsilon_{s,t} \sim \mathcal{N}(0,\sigma_{\epsilon}^{2})
+\]</span></p>
+<p>The model decomposes temperature variability into covariate effects
+(elevation and distance to coast), a smooth long-term temporal trend,
+spatially structured variability across grid cells, and residual
+noise.</p>
+</div>
+<div id="rcode" class="section level1">
+<h1>RCode</h1>
+<div id="load-required-packages" class="section level2">
+<h2>(1) Load required packages</h2>
+<p>Here, we used package <code>terra</code> for raster/NetCDF handling,
+<code>data.table</code> for fast reshaping and joins, <code>spdep</code>
+for neighbourhood structure, and <code>INLA</code> for Bayesian
+inference.</p>
+<pre class="r"><code>library(terra)</code></pre>
 <pre><code>## Warning: package &#39;terra&#39; was built under R version 4.5.2</code></pre>
 <pre><code>## terra 1.8.93</code></pre>
 <pre class="r"><code>library(data.table)</code></pre>
@@ -1729,52 +1727,88 @@ library(terra)</code></pre>
 <pre><code>## Loading required package: Matrix</code></pre>
 <pre><code>## Warning: package &#39;Matrix&#39; was built under R version 4.5.2</code></pre>
 <pre><code>## </code></pre>
-<pre class="r"><code># ----------------------------
-# 0) INPUT FILES
-# ----------------------------
+</div>
+<div id="read-input-data-for-pre-processing" class="section level2">
+<h2>(2) Read Input Data for Pre &amp; Processing</h2>
+<p>Dataset used (1) Monthly anomaly raster <code>anom</code> from
+<code>ds_usa.nc</code>.<br />
+(2) Static covariates from GeoTIFF: - elevation
+(<code>elev_usa.tif</code>) - distance to coast
+(<code>d2c_usa.tif</code>) (3) Preprocessing : Align covariates to the
+anomaly grid using CRS transformation and `resample() i.e. make standard
+spatial grid for both (covariates and anomalies)</p>
+<pre class="r"><code># (1) Input File ----------------------------------------------------------
 nc_file   &lt;- &quot;ds_usa.nc&quot;
 elev_file &lt;- &quot;elev_usa.tif&quot;
 d2c_file  &lt;- &quot;d2c_usa.tif&quot;
 
-# ----------------------------
-# A) Read rasters
-# ----------------------------
+# (2) Input and Preprocessing Raster Data ---------------------------------
+# TEMPERATURE DATASETS ----------------------------------------------------
+# Load temperature anomaly data from NetCDF
+# &#39;anom&#39; contains monthly anomaly layers (time-varying)
 r_anom &lt;- rast(nc_file, subds = &quot;anom&quot;)
-stopifnot(inherits(r_anom, &quot;SpatRaster&quot;))
-stopifnot(nlyr(r_anom) &gt;= 2)
 
+# checking format r_anom
+stopifnot(inherits(r_anom, &quot;SpatRaster&quot;)) #ensure r_anom is a SpatRaster
+stopifnot(nlyr(r_anom) &gt;= 2) #ensure r_anom contains multiple layer
+
+# Get the first anomaly layer as the reference grid
 ref &lt;- r_anom[[1]]
+# Check that ref has a coordinate reference system
 if (is.na(crs(ref))) stop(&quot;anom raster has no CRS; cannot align covariates safely.&quot;)
 
-r_elev &lt;- rast(elev_file)
-r_d2c  &lt;- rast(d2c_file)
+# COVARIATE DATASETS ----------------------------------------------------
+# Now, load the static covariates, elevation and distance to coast
+r_elev &lt;- rast(elev_file) #elevation
+r_d2c  &lt;- rast(d2c_file) #distance to coast
 
-# Align covariates to tmp grid (same CRS + same resolution/extent)
+# Adjust spatial grid covariates to temperature anomalies (same CRS &amp; res)
+# Ensure elevation has the same coordinate reference system as the anomaly grid (use ref)
+# Reproject to match the reference raster if it&#39;s different
 if (!same.crs(r_elev, ref)) r_elev &lt;- project(r_elev, ref)
+
+# Resample elevation so that its resolution and grid alignment
 r_elev &lt;- resample(r_elev, ref, method = &quot;bilinear&quot;)
+
+# get only single elevation layer
 r_elev &lt;- r_elev[[1]]
 
+# Same procedure, but in distance to coast
 if (!same.crs(r_d2c, ref)) r_d2c &lt;- project(r_d2c, ref)
 r_d2c &lt;- resample(r_d2c, ref, method = &quot;bilinear&quot;)
-r_d2c &lt;- r_d2c[[1]]
-
-# ----------------------------------------
-# A1) Time labels for tmp anomalies layers
-# ----------------------------------------
-full_start &lt;- as.Date(&quot;1961-01-01&quot;)
+r_d2c &lt;- r_d2c[[1]]</code></pre>
+</div>
+</div>
+<div id="create-a-time-index-and-label-layers" class="section level1">
+<h1>(3) Create a time index and label layers</h1>
+<ul>
+<li>Build a monthly date sequence starting from
+<code>1961-01-01</code></li>
+<li>Assign layer names in <code>YYYY-MM</code> format for consistent
+reshaping<br />
+</li>
+<li>Subset layers by year range using <code>keep_layers</code></li>
+</ul>
+<pre class="r"><code>full_start &lt;- as.Date(&quot;1961-01-01&quot;)
 tt_full &lt;- seq(full_start, by=&quot;month&quot;, length.out = nlyr(r_anom))
-
 keep_layers &lt;- which(tt_full &gt;= as.Date(&quot;1961-01-01&quot;)) #here to subset the years
-
 r_anom &lt;- r_anom[[keep_layers]]
 tt &lt;- tt_full[keep_layers]
-
-names(r_anom) &lt;- format(tt, &quot;%Y-%m&quot;)
-
-# ----------------------------
-# A2) Build long table (cell x month)
-# ----------------------------
-df_anom &lt;- as.data.frame(r_anom, xy = TRUE, cells = TRUE, na.rm = FALSE)
+names(r_anom) &lt;- format(tt, &quot;%Y-%m&quot;)</code></pre>
+</div>
+<div id="reshape-data-from-raster-to-long-format-cell-month" class="section level1">
+<h1>(4) Reshape data from raster to long format (cell × month)</h1>
+<ul>
+<li>Convert raster to a wide data frame with
+<code>as.data.frame(..., cells=TRUE, xy=TRUE)</code>.<br />
+</li>
+<li>Convert to long format using <code>melt()</code> into columns:</li>
+<li>spatial identifiers (<code>cell</code>, <code>lon</code>,
+<code>lat</code>)</li>
+<li>time identifier (<code>ym</code>, <code>t_id</code>)</li>
+<li>response (<code>y_obs</code>)</li>
+</ul>
+<pre class="r"><code>df_anom &lt;- as.data.frame(r_anom, xy = TRUE, cells = TRUE, na.rm = FALSE)
 
 dt &lt;- melt(as.data.table(df_anom),
            id.vars = c(&quot;cell&quot;,&quot;x&quot;,&quot;y&quot;),
@@ -1789,18 +1823,34 @@ ym_levels &lt;- sort(unique(dt$ym))
 dt[, t_id := match(ym, ym_levels)]
 
 # response
-dt[, y_obs := anom]
-
-# ----------------------------
-# A3) Domain filter: keep only cells with at least one observed month
-# ----------------------------
-cell_ok &lt;- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
-dt &lt;- dt[cell %in% cell_ok]
-
-# ----------------------------
-# A4) Add covariates (MERGE BY lon/lat)
-# ----------------------------
-df_elev &lt;- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)  # x y value
+dt[, y_obs := anom]</code></pre>
+<div id="filter-valid-spatial-domain" class="section level2">
+<h2>(5) Filter valid spatial domain</h2>
+<p>Drop grid cells that are missing (<code>NA</code>) for <strong>all
+months</strong> to avoid including ocean/out-of-domain cells</p>
+<pre class="r"><code>cell_ok &lt;- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
+dt &lt;- dt[cell %in% cell_ok]</code></pre>
+</div>
+<div id="merge-static-covariates-robust-join-by-coordinates" class="section level2">
+<h2>(6) Merge static covariates (robust join by coordinates)</h2>
+<ul>
+<li>Convert elevation and distance-to-coast rasters to
+<code>(x,y,value)</code> tables.</li>
+<li>Round coordinates to avoid floating-point mismatch.Coordinates were
+rounded to six decimal places in order to avoid floating-point precision
+issues during spatial joins. References : Pebesma, E. (2018). Simple
+Features for R: Standardized Support for Spatial Vector Data. R
+Journal</li>
+<li>Merge covariates into the long table using <code>(lon, lat)</code>
+join (not <code>cell</code>).<br />
+</li>
+<li>Scale covariates:
+<ul>
+<li><code>elev_sc = scale(elev)</code></li>
+<li><code>d2c_sc = scale(log1p(dist_to_coast))</code></li>
+</ul></li>
+</ul>
+<pre class="r"><code>df_elev &lt;- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)  # x y value
 df_d2c  &lt;- as.data.frame(r_d2c,  xy = TRUE, na.rm = FALSE)
 
 # convert to data.table BEFORE using :=
@@ -1827,31 +1877,43 @@ dt &lt;- dt[!is.na(elev) &amp; !is.na(dist_to_coast)]
 dt[, elev_sc := as.numeric(scale(elev))]
 dt[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
 
-# ----------------------------
-# A5) Re-index spatial id AFTER all filtering
-# ----------------------------
+# reindex spatial after filtering
 stopifnot(nrow(dt) &gt; 0)
-dt[, area_id := as.integer(factor(cell))]
-
-# ----------------------------
-# B) Train/test split + prediction frame
-# ----------------------------
-dt[, set := fifelse(year &lt;= 2020, &quot;train&quot;, &quot;test&quot;)]
+dt[, area_id := as.integer(factor(cell))]</code></pre>
+</div>
+<div id="create-spatial-index-and-traintest-split" class="section level2">
+<h2>(7) Create spatial index and train/test split</h2>
+<ul>
+<li>Define spatial ID: <code>area_id = factor(cell)</code> after
+filtering</li>
+<li>Split the datasets:
+<ul>
+<li>Train: <code>year &lt;= 2020</code></li>
+<li>Test: <code>year &gt; 2020</code></li>
+</ul></li>
+<li>Create <code>dt_inla</code> for prediction by setting
+<code>y_obs = NA</code> in the test set</li>
+</ul>
+<pre class="r"><code>dt[, set := fifelse(year &lt;= 2020, &quot;train&quot;, &quot;test&quot;)]
 
 dt_truth &lt;- copy(dt)
 
 dt_inla &lt;- copy(dt)
 dt_inla[set == &quot;test&quot;, y_obs := NA_real_]
 
-S &lt;- max(dt_inla$area_id)
-
-# AR1 index removed to increase computing performance
-#dt_inla[, t_ar := t_id]  # AR1 index replicated by area
-
-# ----------------------------
-# C) Adjacency graph (rook) for filtered grid
-# ----------------------------
-cells &lt;- unique(dt_inla[, .(area_id, lon, lat)])
+S &lt;- max(dt_inla$area_id)</code></pre>
+</div>
+<div id="construct-spatial-neighbourhood-graph-using-rook-adjacency" class="section level2">
+<h2>(8) Construct spatial neighbourhood graph (using rook
+adjacency)</h2>
+<ul>
+<li>Arrange cells on the grid using unique <code>lon/lat</code><br />
+</li>
+<li>Build rook adjacency using <code>cell2nb()</code></li>
+<li>Convert to an INLA graph file and read it with
+<code>inla.read.graph()</code></li>
+</ul>
+<pre class="r"><code>cells &lt;- unique(dt_inla[, .(area_id, lon, lat)])
 setorder(cells, lat, lon)
 
 ux &lt;- sort(unique(cells$lon))
@@ -1894,12 +1956,24 @@ write_inla_graph &lt;- function(nb, file) {
 
 graph_file &lt;- file.path(tempdir(), &quot;usa_grid.graph&quot;)
 write_inla_graph(nb_area, graph_file)
-g &lt;- inla.read.graph(graph_file)
-
-# ----------------------------
-# D) Fit INLA models (Gaussian)
-# ----------------------------
-ctrl_pred &lt;- list(compute = TRUE, link = 1)
+g &lt;- inla.read.graph(graph_file)</code></pre>
+</div>
+<div id="fit-candidate-inla-models-gaussian-likelihood" class="section level2">
+<h2>(9) Fit candidate INLA models (Gaussian likelihood)</h2>
+<ul>
+<li><strong>M0:</strong> intercept-only baseline<br />
+</li>
+<li><strong>M1:</strong> baseline + RW2 temporal trend<br />
+</li>
+<li><strong>M2:</strong> M1 + BYM2 spatial effect (graph-based)<br />
+</li>
+<li><strong>M3:</strong> M2 + covariates (<code>elev_sc</code>,
+<code>d2c_sc</code>)<br />
+All models are fitted as Gaussian: <span class="math display">\[
+y_{s,t} \sim \mathcal{N}(\eta_{s,t}, \sigma_\epsilon^2).
+\]</span></li>
+</ul>
+<pre class="r"><code>ctrl_pred &lt;- list(compute = TRUE, link = 1)
 ctrl_comp &lt;- list(dic = TRUE, waic = TRUE, cpo = FALSE)
 ctrl_fxd  &lt;- list(
   mean = list(&quot;(Intercept)&quot; = 0),
@@ -1947,12 +2021,25 @@ m3 &lt;- inla(
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
-)
-
-# ----------------------------
-# E) Compare WAIC/DIC + Test RMSE (2021–2024)
-# ----------------------------
-get_metrics &lt;- function(mod){
+)</code></pre>
+</div>
+<div id="model-comparison-and-predictive-evaluation-20212024" class="section level2">
+<h2>(10) Model comparison and predictive evaluation (2021–2024)**</h2>
+<ul>
+<li>Compare models using:
+<ul>
+<li><strong>WAIC</strong></li>
+<li><strong>DIC</strong></li>
+</ul></li>
+<li>Compute test performance on the hold-out period using:
+<ul>
+<li><strong>RMSE</strong></li>
+<li><strong>MAE</strong></li>
+</ul></li>
+<li>Report fixed effects from the final covariate model via
+<code>summary.fixed</code></li>
+</ul>
+<pre class="r"><code>get_metrics &lt;- function(mod){
   data.table(DIC = mod$dic$dic, WAIC = mod$waic$waic)
 }
 
@@ -1978,30 +2065,146 @@ test_scores &lt;- rbindlist(lapply(names(mods), function(nm){
   cbind(model = nm, score_test(mods[[nm]], dt_inla, dt_truth))
 }))
 
-print(metrics[order(WAIC)])</code></pre>
+summary(m0)</code></pre>
+<pre><code>## Time used:
+##     Pre = 6.37, Running = 88.9, Post = 8.65, Total = 104 
+## Fixed effects:
+##              mean    sd 0.025quant 0.5quant 0.975quant  mode kld
+## (Intercept) 0.349 0.001      0.347    0.349      0.351 0.349   0
+## 
+## Model hyperparameters:
+##                                          mean   sd 0.025quant 0.5quant
+## Precision for the Gaussian observations 0.292 0.00      0.292    0.292
+##                                         0.975quant  mode
+## Precision for the Gaussian observations      0.293 0.292
+## 
+## Deviance Information Criterion (DIC) ...............: 10401792.29
+## Deviance Information Criterion (DIC, saturated) ....: 2557438.87
+## Effective number of parameters .....................: 1.99
+## 
+## Watanabe-Akaike information criterion (WAIC) ...: 10401793.06
+## Effective number of parameters .................: 2.77
+## 
+## Marginal log-Likelihood:  -5200917.24 
+##  is computed 
+## Posterior summaries for the linear predictor and the fitted values are computed
+## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
+<pre class="r"><code>summary(m1)</code></pre>
+<pre><code>## Time used:
+##     Pre = 2.27, Running = 318, Post = 9.23, Total = 330 
+## Fixed effects:
+##             mean    sd 0.025quant 0.5quant 0.975quant mode kld
+## (Intercept) 0.35 0.864     -1.344     0.35      2.045 0.35   0
+## 
+## Random effects:
+##   Name     Model
+##     t_id RW2 model
+## 
+## Model hyperparameters:
+##                                          mean    sd 0.025quant 0.5quant
+## Precision for the Gaussian observations 0.508 0.000      0.507    0.508
+## Precision for t_id                      0.171 0.009      0.154    0.171
+##                                         0.975quant  mode
+## Precision for the Gaussian observations      0.509 0.508
+## Precision for t_id                           0.190 0.170
+## 
+## Deviance Information Criterion (DIC) ...............: 8990324.87
+## Deviance Information Criterion (DIC, saturated) ....: 2558153.23
+## Effective number of parameters .....................: 720.46
+## 
+## Watanabe-Akaike information criterion (WAIC) ...: 8990268.18
+## Effective number of parameters .................: 720.90
+## 
+## Marginal log-Likelihood:  -4498173.12 
+##  is computed 
+## Posterior summaries for the linear predictor and the fitted values are computed
+## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
+<pre class="r"><code>summary(m2)</code></pre>
+<pre><code>## Time used:
+##     Pre = 22.1, Running = 3273, Post = 10.4, Total = 3306 
+## Fixed effects:
+##             mean    sd 0.025quant 0.5quant 0.975quant mode kld
+## (Intercept) 0.35 0.864     -1.344     0.35      2.044 0.35   0
+## 
+## Random effects:
+##   Name     Model
+##     t_id RW2 model
+##    area_id BYM2 model
+## 
+## Model hyperparameters:
+##                                            mean    sd 0.025quant 0.5quant
+## Precision for the Gaussian observations   0.510 0.000      0.509    0.510
+## Precision for t_id                        0.181 0.014      0.161    0.178
+## Precision for area_id                   213.903 8.567    199.565  213.155
+## Phi for area_id                           0.143 0.005      0.130    0.143
+##                                         0.975quant    mode
+## Precision for the Gaussian observations      0.511   0.510
+## Precision for t_id                           0.215   0.169
+## Precision for area_id                      232.972 210.040
+## Phi for area_id                              0.152   0.145
+## 
+## Deviance Information Criterion (DIC) ...............: 8985715.37
+## Deviance Information Criterion (DIC, saturated) ....: 2560248.23
+## Effective number of parameters .....................: 2917.40
+## 
+## Watanabe-Akaike information criterion (WAIC) ...: 8985665.44
+## Effective number of parameters .................: 2915.13
+## 
+## Marginal log-Likelihood:  -4496861.53 
+##  is computed 
+## Posterior summaries for the linear predictor and the fitted values are computed
+## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
+<pre class="r"><code>summary(m3)</code></pre>
+<pre><code>## Time used:
+##     Pre = 24.4, Running = 2971, Post = 12.5, Total = 3008 
+## Fixed effects:
+##               mean    sd 0.025quant 0.5quant 0.975quant   mode kld
+## (Intercept)  0.352 0.873     -1.360    0.352      2.063  0.352   0
+## elev_sc      0.017 0.002      0.013    0.017      0.022  0.017   0
+## d2c_sc      -0.024 0.002     -0.028   -0.024     -0.020 -0.024   0
+## 
+## Random effects:
+##   Name     Model
+##     t_id RW2 model
+##    area_id BYM2 model
+## 
+## Model hyperparameters:
+##                                            mean    sd 0.025quant 0.5quant
+## Precision for the Gaussian observations   0.509 0.000      0.508    0.509
+## Precision for t_id                        0.128 0.012      0.111    0.126
+## Precision for area_id                   178.803 9.634    165.449  177.237
+## Phi for area_id                           0.047 0.003      0.042    0.047
+##                                         0.975quant    mode
+## Precision for the Gaussian observations      0.510   0.509
+## Precision for t_id                           0.158   0.118
+## Precision for area_id                      201.913 170.540
+## Phi for area_id                              0.052   0.047
+## 
+## Deviance Information Criterion (DIC) ...............: 8985737.30
+## Deviance Information Criterion (DIC, saturated) ....: 2560550.74
+## Effective number of parameters .....................: 3125.67
+## 
+## Watanabe-Akaike information criterion (WAIC) ...: 8985695.68
+## Effective number of parameters .................: 3129.74
+## 
+## Marginal log-Likelihood:  -4496941.34 
+##  is computed 
+## Posterior summaries for the linear predictor and the fitted values are computed
+## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
+<pre class="r"><code>print(metrics[order(WAIC)])</code></pre>
 <pre><code>##     model      DIC     WAIC
 ##    &lt;char&gt;    &lt;num&gt;    &lt;num&gt;
-## 1:     M3  8985668  8985617
-## 2:     M2  8985686  8985639
+## 1:     M2  8985715  8985665
+## 2:     M3  8985737  8985696
 ## 3:     M1  8990325  8990268
 ## 4:     M0 10401792 10401793</code></pre>
 <pre class="r"><code>print(test_scores[order(RMSE)])</code></pre>
 <pre><code>##     model n_test     RMSE      MAE
 ##    &lt;char&gt;  &lt;int&gt;    &lt;num&gt;    &lt;num&gt;
-## 1:     M1 177624 205.2347 33.11426
-## 2:     M3 177624 205.2369 33.10289
-## 3:     M2 177624 205.2373 33.09821
+## 1:     M1 177624 205.2347 33.11425
+## 2:     M2 177624 205.2356 33.11052
+## 3:     M3 177624 205.2373 33.09988
 ## 4:     M0 177624 205.2373 33.10057</code></pre>
-<pre class="r"><code># fixed effects summary
-print(m3$summary.fixed)</code></pre>
-<pre><code>##                    mean          sd  0.025quant    0.5quant  0.975quant
-## (Intercept)  0.35080633 0.866465481 -1.34824656  0.35080633  2.04985924
-## elev_sc      0.01663606 0.002048204  0.01261979  0.01663604  0.02065244
-## d2c_sc      -0.02358391 0.001670591 -0.02685993 -0.02358387 -0.02030818
-##                    mode          kld
-## (Intercept)  0.35080633 5.525652e-11
-## elev_sc      0.01663604 5.473127e-11
-## d2c_sc      -0.02358387 5.288159e-11</code></pre>
 </div>
 </div>
 
