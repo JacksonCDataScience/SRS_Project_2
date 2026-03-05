@@ -309,7 +309,7 @@ inla.setOption(num.threads = 8) # setting thread to laptop cpu for faster work
 
 # M0: fixed effects only
 m0 <- inla(
-  y_obs ~ 1 ,
+  y_obs ~ 1 + elev_sc + d2c_sc,
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
@@ -318,7 +318,7 @@ m0 <- inla(
 
 # M1: + RW2 trend
 m1 <- inla(
-  y_obs ~ 1 +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = "rw2", constr = TRUE),
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
@@ -328,8 +328,7 @@ m1 <- inla(
 
 # M2: + BYM2 spatial
 m2 <- inla(
-  y_obs ~ 1 +
-    f(t_id, model = "rw2", constr = TRUE) +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(area_id, model = "bym2", graph = g, scale.model = TRUE, constr = TRUE),
   data = dt_inla, family = "gaussian",
   control.fixed = ctrl_fxd,
@@ -337,7 +336,7 @@ m2 <- inla(
   control.compute = ctrl_comp
 )
 
-# M3: + covariates
+# M3: + RW2 trend + BYM2 spatial
 m3 <- inla(
   y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = "rw2", constr = TRUE) +

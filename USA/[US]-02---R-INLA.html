@@ -1984,7 +1984,7 @@ inla.setOption(num.threads = 8) # setting thread to laptop cpu for faster work
 
 # M0: fixed effects only
 m0 &lt;- inla(
-  y_obs ~ 1 ,
+  y_obs ~ 1 + elev_sc + d2c_sc,
   data = dt_inla, family = &quot;gaussian&quot;,
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
@@ -1993,7 +1993,7 @@ m0 &lt;- inla(
 
 # M1: + RW2 trend
 m1 &lt;- inla(
-  y_obs ~ 1 +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = &quot;rw2&quot;, constr = TRUE),
   data = dt_inla, family = &quot;gaussian&quot;,
   control.fixed = ctrl_fxd,
@@ -2003,8 +2003,7 @@ m1 &lt;- inla(
 
 # M2: + BYM2 spatial
 m2 &lt;- inla(
-  y_obs ~ 1 +
-    f(t_id, model = &quot;rw2&quot;, constr = TRUE) +
+  y_obs ~ 1 + elev_sc + d2c_sc +
     f(area_id, model = &quot;bym2&quot;, graph = g, scale.model = TRUE, constr = TRUE),
   data = dt_inla, family = &quot;gaussian&quot;,
   control.fixed = ctrl_fxd,
@@ -2012,7 +2011,7 @@ m2 &lt;- inla(
   control.compute = ctrl_comp
 )
 
-# M3: + covariates
+# M3: + RW2 trend + BYM2 spatial
 m3 &lt;- inla(
   y_obs ~ 1 + elev_sc + d2c_sc +
     f(t_id, model = &quot;rw2&quot;, constr = TRUE) +
@@ -2067,34 +2066,38 @@ test_scores &lt;- rbindlist(lapply(names(mods), function(nm){
 
 summary(m0)</code></pre>
 <pre><code>## Time used:
-##     Pre = 6.37, Running = 88.9, Post = 8.65, Total = 104 
+##     Pre = 5.18, Running = 149, Post = 11.9, Total = 166 
 ## Fixed effects:
-##              mean    sd 0.025quant 0.5quant 0.975quant  mode kld
-## (Intercept) 0.349 0.001      0.347    0.349      0.351 0.349   0
+##               mean    sd 0.025quant 0.5quant 0.975quant   mode kld
+## (Intercept)  0.349 0.001      0.347    0.349      0.351  0.349   0
+## elev_sc      0.021 0.001      0.019    0.021      0.024  0.021   0
+## d2c_sc      -0.028 0.001     -0.030   -0.028     -0.025 -0.028   0
 ## 
 ## Model hyperparameters:
 ##                                          mean   sd 0.025quant 0.5quant
-## Precision for the Gaussian observations 0.292 0.00      0.292    0.292
+## Precision for the Gaussian observations 0.293 0.00      0.292    0.293
 ##                                         0.975quant  mode
-## Precision for the Gaussian observations      0.293 0.292
+## Precision for the Gaussian observations      0.293 0.293
 ## 
-## Deviance Information Criterion (DIC) ...............: 10401792.29
-## Deviance Information Criterion (DIC, saturated) ....: 2557438.87
-## Effective number of parameters .....................: 1.99
+## Deviance Information Criterion (DIC) ...............: 10401228.38
+## Deviance Information Criterion (DIC, saturated) ....: 2557440.88
+## Effective number of parameters .....................: 3.99
 ## 
-## Watanabe-Akaike information criterion (WAIC) ...: 10401793.06
-## Effective number of parameters .................: 2.77
+## Watanabe-Akaike information criterion (WAIC) ...: 10401228.96
+## Effective number of parameters .................: 4.58
 ## 
-## Marginal log-Likelihood:  -5200917.24 
+## Marginal log-Likelihood:  -5200653.63 
 ##  is computed 
 ## Posterior summaries for the linear predictor and the fitted values are computed
 ## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
 <pre class="r"><code>summary(m1)</code></pre>
 <pre><code>## Time used:
-##     Pre = 2.27, Running = 318, Post = 9.23, Total = 330 
+##     Pre = 3.71, Running = 593, Post = 14.1, Total = 611 
 ## Fixed effects:
-##             mean    sd 0.025quant 0.5quant 0.975quant mode kld
-## (Intercept) 0.35 0.864     -1.344     0.35      2.045 0.35   0
+##               mean    sd 0.025quant 0.5quant 0.975quant   mode kld
+## (Intercept)  0.350 0.864     -1.344    0.350      2.045  0.350   0
+## elev_sc      0.021 0.001      0.019    0.021      0.023  0.021   0
+## d2c_sc      -0.028 0.001     -0.029   -0.028     -0.026 -0.028   0
 ## 
 ## Random effects:
 ##   Name     Model
@@ -2108,60 +2111,59 @@ summary(m0)</code></pre>
 ## Precision for the Gaussian observations      0.509 0.508
 ## Precision for t_id                           0.190 0.170
 ## 
-## Deviance Information Criterion (DIC) ...............: 8990324.87
-## Deviance Information Criterion (DIC, saturated) ....: 2558153.23
-## Effective number of parameters .....................: 720.46
+## Deviance Information Criterion (DIC) ...............: 8989342.02
+## Deviance Information Criterion (DIC, saturated) ....: 2558158.01
+## Effective number of parameters .....................: 722.46
 ## 
-## Watanabe-Akaike information criterion (WAIC) ...: 8990268.18
-## Effective number of parameters .................: 720.90
+## Watanabe-Akaike information criterion (WAIC) ...: 8989285.48
+## Effective number of parameters .................: 722.91
 ## 
-## Marginal log-Likelihood:  -4498173.12 
+## Marginal log-Likelihood:  -4497700.74 
 ##  is computed 
 ## Posterior summaries for the linear predictor and the fitted values are computed
 ## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
 <pre class="r"><code>summary(m2)</code></pre>
 <pre><code>## Time used:
-##     Pre = 22.1, Running = 3273, Post = 10.4, Total = 3306 
+##     Pre = 32.6, Running = 201, Post = 10.8, Total = 244 
 ## Fixed effects:
-##             mean    sd 0.025quant 0.5quant 0.975quant mode kld
-## (Intercept) 0.35 0.864     -1.344     0.35      2.044 0.35   0
+##               mean    sd 0.025quant 0.5quant 0.975quant   mode kld
+## (Intercept)  0.349 0.001      0.347    0.349      0.352  0.349   0
+## elev_sc      0.016 0.002      0.011    0.016      0.021  0.016   0
+## d2c_sc      -0.022 0.002     -0.026   -0.022     -0.019 -0.022   0
 ## 
 ## Random effects:
 ##   Name     Model
-##     t_id RW2 model
-##    area_id BYM2 model
+##     area_id BYM2 model
 ## 
 ## Model hyperparameters:
-##                                            mean    sd 0.025quant 0.5quant
-## Precision for the Gaussian observations   0.510 0.000      0.509    0.510
-## Precision for t_id                        0.181 0.014      0.161    0.178
-## Precision for area_id                   213.903 8.567    199.565  213.155
-## Phi for area_id                           0.143 0.005      0.130    0.143
+##                                            mean     sd 0.025quant 0.5quant
+## Precision for the Gaussian observations   0.293  0.000      0.292    0.293
+## Precision for area_id                   273.047 40.777    186.400  275.830
+## Phi for area_id                           0.747  0.078      0.620    0.744
 ##                                         0.975quant    mode
-## Precision for the Gaussian observations      0.511   0.510
-## Precision for t_id                           0.215   0.169
-## Precision for area_id                      232.972 210.040
-## Phi for area_id                              0.152   0.145
+## Precision for the Gaussian observations      0.293   0.293
+## Precision for area_id                      338.794 297.183
+## Phi for area_id                              0.904   0.705
 ## 
-## Deviance Information Criterion (DIC) ...............: 8985715.37
-## Deviance Information Criterion (DIC, saturated) ....: 2560248.23
-## Effective number of parameters .....................: 2917.40
+## Deviance Information Criterion (DIC) ...............: 10400348.27
+## Deviance Information Criterion (DIC, saturated) ....: 2558349.28
+## Effective number of parameters .....................: 913.83
 ## 
-## Watanabe-Akaike information criterion (WAIC) ...: 8985665.44
-## Effective number of parameters .................: 2915.13
+## Watanabe-Akaike information criterion (WAIC) ...: 10400339.43
+## Effective number of parameters .................: 904.67
 ## 
-## Marginal log-Likelihood:  -4496861.53 
+## Marginal log-Likelihood:  -5200710.17 
 ##  is computed 
 ## Posterior summaries for the linear predictor and the fitted values are computed
 ## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
 <pre class="r"><code>summary(m3)</code></pre>
 <pre><code>## Time used:
-##     Pre = 24.4, Running = 2971, Post = 12.5, Total = 3008 
+##     Pre = 29.4, Running = 2826, Post = 13.7, Total = 2869 
 ## Fixed effects:
 ##               mean    sd 0.025quant 0.5quant 0.975quant   mode kld
-## (Intercept)  0.352 0.873     -1.360    0.352      2.063  0.352   0
-## elev_sc      0.017 0.002      0.013    0.017      0.022  0.017   0
-## d2c_sc      -0.024 0.002     -0.028   -0.024     -0.020 -0.024   0
+## (Intercept)  0.352 0.874     -1.361    0.352      2.065  0.352   0
+## elev_sc      0.016 0.002      0.011    0.016      0.021  0.016   0
+## d2c_sc      -0.023 0.002     -0.027   -0.023     -0.019 -0.023   0
 ## 
 ## Random effects:
 ##   Name     Model
@@ -2169,42 +2171,42 @@ summary(m0)</code></pre>
 ##    area_id BYM2 model
 ## 
 ## Model hyperparameters:
-##                                            mean    sd 0.025quant 0.5quant
-## Precision for the Gaussian observations   0.509 0.000      0.508    0.509
-## Precision for t_id                        0.128 0.012      0.111    0.126
-## Precision for area_id                   178.803 9.634    165.449  177.237
-## Phi for area_id                           0.047 0.003      0.042    0.047
+##                                            mean     sd 0.025quant 0.5quant
+## Precision for the Gaussian observations   0.512  0.001      0.510    0.512
+## Precision for t_id                        0.148  0.014      0.129    0.146
+## Precision for area_id                   199.637 10.653    184.187  198.025
+## Phi for area_id                           0.143  0.006      0.131    0.143
 ##                                         0.975quant    mode
-## Precision for the Gaussian observations      0.510   0.509
-## Precision for t_id                           0.158   0.118
-## Precision for area_id                      201.913 170.540
-## Phi for area_id                              0.052   0.047
+## Precision for the Gaussian observations      0.512   0.512
+## Precision for t_id                           0.182   0.137
+## Precision for area_id                      224.884 191.273
+## Phi for area_id                              0.157   0.142
 ## 
-## Deviance Information Criterion (DIC) ...............: 8985737.30
-## Deviance Information Criterion (DIC, saturated) ....: 2560550.74
-## Effective number of parameters .....................: 3125.67
+## Deviance Information Criterion (DIC) ...............: 8985834.22
+## Deviance Information Criterion (DIC, saturated) ....: 2573644.04
+## Effective number of parameters .....................: 3132.16
 ## 
-## Watanabe-Akaike information criterion (WAIC) ...: 8985695.68
-## Effective number of parameters .................: 3129.74
+## Watanabe-Akaike information criterion (WAIC) ...: 8985650.70
+## Effective number of parameters .................: 2998.09
 ## 
-## Marginal log-Likelihood:  -4496941.34 
+## Marginal log-Likelihood:  -4496879.62 
 ##  is computed 
 ## Posterior summaries for the linear predictor and the fitted values are computed
 ## (Posterior marginals needs also &#39;control.compute=list(return.marginals.predictor=TRUE)&#39;)</code></pre>
 <pre class="r"><code>print(metrics[order(WAIC)])</code></pre>
 <pre><code>##     model      DIC     WAIC
 ##    &lt;char&gt;    &lt;num&gt;    &lt;num&gt;
-## 1:     M2  8985715  8985665
-## 2:     M3  8985737  8985696
-## 3:     M1  8990325  8990268
-## 4:     M0 10401792 10401793</code></pre>
+## 1:     M3  8985834  8985651
+## 2:     M1  8989342  8989285
+## 3:     M2 10400348 10400339
+## 4:     M0 10401228 10401229</code></pre>
 <pre class="r"><code>print(test_scores[order(RMSE)])</code></pre>
 <pre><code>##     model n_test     RMSE      MAE
 ##    &lt;char&gt;  &lt;int&gt;    &lt;num&gt;    &lt;num&gt;
-## 1:     M1 177624 205.2347 33.11425
-## 2:     M2 177624 205.2356 33.11052
-## 3:     M3 177624 205.2373 33.09988
-## 4:     M0 177624 205.2373 33.10057</code></pre>
+## 1:     M1 177624 205.2350 33.11436
+## 2:     M3 177624 205.2374 33.09893
+## 3:     M0 177624 205.2376 33.10012
+## 4:     M2 177624 205.2381 33.09767</code></pre>
 </div>
 </div>
 
