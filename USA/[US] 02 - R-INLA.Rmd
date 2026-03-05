@@ -307,6 +307,10 @@ ctrl_fxd  <- list(
 
 inla.setOption(num.threads = 8) # setting thread to laptop cpu for faster work
 
+# setting for spatio-temporal interaction
+dt_inla$st_id <- interaction(dt_inla$area_id, dt_inla$t_id, drop = TRUE)
+dt_inla$st_id <- as.numeric(dt_inla$st_id)
+
 # M0: fixed effects only
 m0 <- inla(
   y_obs ~ 1 + elev_sc + d2c_sc,
