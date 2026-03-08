@@ -1,0 +1,95 @@
+---
+title: "data_setup"
+output: html_document
+date: "2026-03-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set up predictor variable (annual temperature range)
+
+now we're gonna set up our data using max temperature range
+
+
+```{r}
+library(terra)
+
+temp <- rast("us_temp.nc", subds="tmp")
+
+time_vals <- time(temp)
+
+years <- format(time_vals, "%Y")
+
+temp_range <- tapp(temp, years, function(x) {
+  max(x) - min(x)
+})
+
+
+```
+
+## Read in distance to coastline data
+
+```{r}
+r_d2c <- rast("us_temp.nc", subds="distance_to_coast")
+```
+
+
+## Calculate elevation for our grids
+
+```{r}
+
+install.packages("geodata")
+install.packages("ncdf4")
+
+library(ncdf4)
+library(terra)
+library(geodata)
+
+# add elevation data
+elev <- elevation_30s(country = "USA", path = "data/")
+plot(elev)
+
+elev_05deg <- resample(elev, temp[[1]], method = "average")
+plot(elev_05deg)
+```
+
+
+## Combine all elements into one raster file
+
+```{r}
+
+# combine layers of data
+r_all <- c(temp_range, elev_05deg, r_d2c)
+year_names <- paste0("temp.range.", 1901:2012)
+names(r_all)[1:nlyr(temp_range)] <- year_names 
+names(r_all)[(nlyr(temp_range)+1)] <- "elev"
+names(r_all)[(nlyr(temp_range)+2)] <- "dist_to_coast"
+
+writeCDF(r_all, "ds_usa.nc", overwrite=TRUE)
+
+```
+
+
+## Check raster file has been exported successfully
+our data goes from Jan 1901 to December 2012, so we should have 112 layers for 
+temperature range, one layer for elevation and one for distance to coastline
+
+```{r}
+
+data_rast <- rast("ds_usa.nc")
+
+data_rast
+
+```
+
+```{r}
+
+df <- as.data.frame(data_rast, xy = TRUE, na.rm = TRUE)
+
+df
+```
+
+
+
