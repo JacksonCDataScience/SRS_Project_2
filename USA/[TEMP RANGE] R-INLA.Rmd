@@ -1,0 +1,378 @@
+---
+title: |
+  <center> Statistical Research Skill </center>
+  <center> Group 6 </center>
+subtitle: School of Mathematics, University of Edinburgh
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+### Model Structure
+
+The Bayesian hierarchical spatio-temporal (BHST) model is specified as:
+
+$$
+y_{s,t}
+=
+\mu
++
+\beta_{1}\,\text{Elev}_s
++
+\beta_{2}\,\text{DistCoast}_s
++
+u_s
++
+\delta(t)
++
+\epsilon_{s,t}
+$$
+
+where:
+
+- $y_{s,t}$ denotes the **annual temperature range** at spatial location $s$ and time $t$.
+
+**Model Components**
+
+- **Global mean ($\mu$)**  
+  Represents the overall average temperature range across all time periods and spatial locations.
+
+- **Elevation effect ($\beta_1 \text{Elev}_s$)**  
+  Captures the influence of elevation on temperature variability.  
+  Higher elevation areas often experience stronger temperature variation.
+
+- **Distance-to-coast effect ($\beta_2 \text{DistCoast}_s$)**  
+  Represents the influence of proximity to the coastline.  
+  Coastal regions often experience moderated temperatures compared to inland areas.
+
+- **Smooth temporal trend ($\delta(t)$)**  
+  Captures long-term climate evolution over time.  
+  A second-order random walk (RW2) prior is used to allow a flexible, smooth nonlinear trend without imposing a strict linear structure.
+
+- **Spatial structured effect ($u_s$)**  
+  Models spatial dependence between neighbouring grid cells.  
+  This component is specified using a Conditional Autoregressive (CAR) or BYM2 prior, allowing geographically nearby locations to exhibit similar temperature patterns.
+
+- **Observation error ($\epsilon_{s,t}$)**  
+  Represents unexplained variability, assumed to follow a Gaussian distribution:
+
+$$
+\epsilon_{s,t} \sim \mathcal{N}(0,\sigma_\epsilon^2)
+$$
+
+The model decomposes temperature range variability into covariate effects (elevation and distance to coast), a smooth long-term temporal trend, spatially structured variability across grid cells, and residual noise.
+
+---
+
+# RCode
+
+## (1) Load required packages  
+Here, we used package `terra` for raster/NetCDF handling, `data.table` for fast reshaping and joins, `spdep` for neighbourhood structure, and `INLA` for Bayesian inference. 
+
+```{r}
+library(terra)
+library(data.table)
+library(spdep)
+library(INLA)
+```
+
+---
+
+# (2) Read Input Data for Pre & Processing
+
+Dataset used  
+
+(1) **Annual temperature range raster** from `ds_usa.nc`  
+(2) Static covariates from GeoTIFF:
+
+- elevation (`elev_usa.tif`)
+- distance to coast (`d2c_usa.tif`)
+
+(3) Preprocessing : Align covariates to the temperature grid using CRS transformation and `resample()` i.e. make standard spatial grid for both (covariates and temperature range)
+
+```{r}
+# (1) Input File ----------------------------------------------------------
+nc_file   <- "ds_usa.nc"
+
+# Load yearly temperature range data from NetCDF
+r_all <- rast(nc_file)
+
+# rename data correctly
+year_names <- paste0("temp.range.", 1901:2012)
+names(r_all)[1:length(year_names)] <- year_names 
+names(r_all)[(length(year_names)+1)] <- "elev"
+names(r_all)[(length(year_names)+2)] <- "dist_to_coast"
+
+# extract temperature ranges
+r_temp <- r_all[[1:112]]
+
+# Get the first layer as the reference grid
+ref <- r_temp[[1]]
+
+# Check that ref has a coordinate reference system
+if (is.na(crs(ref))) stop("temperature raster has no CRS; cannot align covariates safely.")
+
+# COVARIATE DATASETS ----------------------------------------------------
+
+# Now, load the static covariates
+r_elev <- r_all[[113]]
+r_d2c  <- r_all[[114]]
+```
+
+---
+
+# (3) Create a time index and label layers
+
+- Extract year labels from raster layer names
+- Assign layer names in `YYYY` format for consistent reshaping
+
+```{r}
+yrs <- 1901:(1900 + nlyr(r_temp))
+names(r_temp) <- as.character(yrs)
+```
+
+---
+
+# (4) Reshape data from raster to long format (cell × year)
+
+- Convert raster to a wide data frame with `as.data.frame(..., cells=TRUE, xy=TRUE)`
+- Convert to long format using `melt()`
+- note that by doing this, we will have many NA temperatures. these obs. are not
+in mainland US and will be dropped in the next step
+
+```{r}
+df_temp <- as.data.frame(r_temp, xy = TRUE, cells = TRUE, na.rm = FALSE)
+
+dt <- melt(as.data.table(df_temp),
+           id.vars = c("cell","x","y"),
+           variable.name = "year",
+           value.name = "temp_range")
+
+setnames(dt, old = c("x","y"), new = c("lon","lat"))
+
+dt[, year := as.integer(gsub("temp.range.", "", year))]
+
+#dt[, year := as.integer(year)]
+
+year_levels <- sort(unique(dt$year))
+dt[, t_id := match(year, year_levels)]
+
+# response
+dt[, y_obs := temp_range]
+```
+
+---
+
+# (5) Filter valid spatial domain  
+
+Drop grid cells that are missing (`NA`) for **all years** to avoid including ocean/out-of-domain cells.
+
+```{r}
+cell_ok <- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
+dt <- dt[cell %in% cell_ok]
+```
+
+---
+
+# (6) Merge static covariates (robust join by coordinates)
+
+```{r}
+df_elev <- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)
+df_d2c  <- as.data.frame(r_d2c,  xy = TRUE, na.rm = FALSE)
+
+df_elev <- as.data.table(df_elev)
+df_d2c  <- as.data.table(df_d2c)
+
+setnames(df_elev, names(df_elev)[3], "elev")
+setnames(df_d2c,  names(df_d2c)[3],  "dist_to_coast")
+
+df_elev[, `:=`(x = round(x, 6), y = round(y, 6))]
+df_d2c[,  `:=`(x = round(x, 6), y = round(y, 6))]
+dt[,      `:=`(lon = round(lon, 6), lat = round(lat, 6))]
+
+covs_xy <- merge(df_elev, df_d2c, by = c("x", "y"), all = TRUE)
+
+dt <- merge(dt, covs_xy,
+            by.x = c("lon","lat"),
+            by.y = c("x","y"),
+            all.x = TRUE)
+
+dt <- dt[!is.na(elev) & !is.na(dist_to_coast)]
+
+dt[, elev_sc := as.numeric(scale(elev))]
+dt[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
+
+stopifnot(nrow(dt) > 0)
+
+dt[, area_id := as.integer(factor(cell))]
+
+
+# get rid of unneeded/duplicate columns
+dt <- dt[,-c("cell", "y_obs")]
+
+```
+
+---
+
+# (7) Create spatial index
+
+```{r}
+# (7) Create spatial index
+
+dt_inla <- copy(dt)
+
+# number of spatial areas
+S <- max(dt_inla$area_id)
+```
+
+---
+
+# (8) Construct spatial neighbourhood graph (using rook adjacency)
+
+
+```{r}
+cells <- unique(dt_inla[, .(area_id, lon, lat)])
+setorder(cells, lat, lon)
+
+ux <- sort(unique(cells$lon))
+uy <- sort(unique(cells$lat))
+ncol <- length(ux)
+nrow <- length(uy)
+
+cells[, col := match(lon, ux)]
+cells[, row := match(lat, uy)]
+
+mat <- matrix(NA_integer_, nrow = nrow, ncol = ncol)
+mat[cbind(cells$row, cells$col)] <- cells$area_id
+idx_to_area <- as.vector(mat)
+
+nb_full <- cell2nb(nrow, ncol, type = "rook")
+nb_area <- vector("list", length = S)
+
+for (idx in seq_along(nb_full)) {
+  a <- idx_to_area[idx]
+  if (is.na(a)) next
+  neigh_idx  <- nb_full[[idx]]
+  neigh_area <- idx_to_area[neigh_idx]
+  neigh_area <- neigh_area[!is.na(neigh_area)]
+  nb_area[[a]] <- sort(unique(as.integer(neigh_area)))
+}
+
+for (i in seq_len(S)) if (is.null(nb_area[[i]])) nb_area[[i]] <- integer(0)
+
+write_inla_graph <- function(nb, file) {
+  S <- length(nb)
+  con <- file(file, open = "wt")
+  on.exit(close(con), add = TRUE)
+  writeLines(as.character(S), con)
+  for (i in seq_len(S)) {
+    neigh <- nb[[i]]
+    if (is.null(neigh)) neigh <- integer(0)
+    neigh <- sort(unique(as.integer(neigh)))
+    writeLines(paste(c(i, length(neigh), neigh), collapse = " "), con)
+  }
+}
+
+graph_file <- file.path(tempdir(), "usa_grid.graph")
+write_inla_graph(nb_area, graph_file)
+g <- inla.read.graph(graph_file)
+```
+
+---
+
+# (9) Fit candidate INLA models (Gaussian likelihood)
+
+```{r}
+
+ctrl_pred <- list(compute = TRUE, link = 1)
+
+ctrl_comp <- list(
+  dic = TRUE,
+  waic = TRUE,
+  cpo = FALSE
+)
+
+ctrl_fxd  <- list(
+  mean = list("(Intercept)" = 0),
+  prec = list("(Intercept)" = 1/100)
+)
+
+inla.setOption(num.threads = 8)
+
+# M0: fixed effects only (no spatial/temporal structure)
+m0 <- inla(
+  temp_range ~ 1 + elev_sc,
+  data = dt_inla,
+  family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+
+# M1: + temporal RW2 trend
+m1 <- inla(
+  temp_range ~ 1 + elev_sc +
+    f(t_id, model = "rw2", constr = TRUE),
+  data = dt_inla,
+  family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+
+# M2: + spatial BYM2 effect
+m2 <- inla(
+  temp_range ~ 1 + elev_sc +
+    f(area_id, model = "bym2", graph = g,
+      scale.model = TRUE, constr = TRUE),
+  data = dt_inla,
+  family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+
+# M3: full spatio-temporal model
+m3 <- inla(
+  temp_range ~ 1 + elev_sc +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(area_id, model = "bym2", graph = g,
+      scale.model = TRUE, constr = TRUE),
+  data = dt_inla,
+  family = "gaussian",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+```
+
+
+---
+
+# (10) Model comparison
+
+
+```{r}
+get_metrics <- function(mod){
+  data.table(
+    DIC  = mod$dic$dic,
+    WAIC = mod$waic$waic
+  )
+}
+
+mods <- list(
+  M0 = m0,
+  M1 = m1,
+  M2 = m2,
+  M3 = m3
+)
+
+metrics <- rbindlist(
+  lapply(names(mods), function(nm){
+    cbind(model = nm, get_metrics(mods[[nm]]))
+  })
+)
+
+print(metrics[order(WAIC)])
+```
