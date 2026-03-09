@@ -118,6 +118,10 @@ if (is.na(crs(ref))) stop("temperature raster has no CRS; cannot align covariate
 # Now, load the static covariates
 r_elev <- r_all[[113]]
 r_d2c  <- r_all[[114]]
+
+
+dens <- density(dt$temp_range)
+plot(dens)
 ```
 
 ---
@@ -160,7 +164,10 @@ dt[, t_id := match(year, year_levels)]
 
 # response
 dt[, y_obs := temp_range]
+
+
 ```
+
 
 ---
 
@@ -277,6 +284,11 @@ write_inla_graph <- function(nb, file) {
 graph_file <- file.path(tempdir(), "usa_grid.graph")
 write_inla_graph(nb_area, graph_file)
 g <- inla.read.graph(graph_file)
+
+dt$log_temp_range <- log(dt$temp_range)
+
+dt
+
 ```
 
 ---
@@ -304,7 +316,7 @@ inla.setOption(num.threads = 8)
 m0 <- inla(
   temp_range ~ 1 + elev_sc,
   data = dt_inla,
-  family = "gaussian",
+  family = "lognormal",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
@@ -315,7 +327,7 @@ m1 <- inla(
   temp_range ~ 1 + elev_sc +
     f(t_id, model = "rw2", constr = TRUE),
   data = dt_inla,
-  family = "gaussian",
+  family = "lognormal",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
@@ -327,24 +339,56 @@ m2 <- inla(
     f(area_id, model = "bym2", graph = g,
       scale.model = TRUE, constr = TRUE),
   data = dt_inla,
-  family = "gaussian",
+  family = "lognormal",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-# M3: full spatio-temporal model
+
+# M3: spatial BYM2 + temporal RW2 effect
 m3 <- inla(
   temp_range ~ 1 + elev_sc +
     f(t_id, model = "rw2", constr = TRUE) +
     f(area_id, model = "bym2", graph = g,
       scale.model = TRUE, constr = TRUE),
   data = dt_inla,
-  family = "gaussian",
+  family = "lognormal",
   control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
+
+# M4: spatial BYM2 + temporal RW2 effect with distance to coast
+m4 <- inla(
+  temp_range ~ 1 + elev_sc + d2c_sc +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(area_id, model = "bym2", graph = g,
+      scale.model = TRUE, constr = TRUE),
+  data = dt_inla,
+  family = "lognormal",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+
+
+m5 <- inla(
+  temp_range ~ 1 +
+    f(t_id, model = "rw2", constr = TRUE) +
+    f(area_id, model = "bym2", graph = g,
+      scale.model = TRUE, constr = TRUE),
+  data = dt_inla,
+  family = "lognormal",
+  control.fixed = ctrl_fxd,
+  control.predictor = ctrl_pred,
+  control.compute = ctrl_comp
+)
+ 
+
+
+cor(dt_inla$dist_to_coast, dt_inla$temp_range)
+
 ```
 
 
@@ -361,11 +405,14 @@ get_metrics <- function(mod){
   )
 }
 
+
 mods <- list(
   M0 = m0,
   M1 = m1,
   M2 = m2,
-  M3 = m3
+  M3 = m3,
+  M4 = m4,
+  M5 = m5
 )
 
 metrics <- rbindlist(
@@ -376,3 +423,36 @@ metrics <- rbindlist(
 
 print(metrics[order(WAIC)])
 ```
+
+# (11) Model evaluation
+
+
+```{r}
+
+spatial_effect <- m3_log$summary
+
+
+
+summary(m3)
+
+
+g$spatial_mean <- spatial_effect
+
+
+g
+
+library(ggplot2)
+
+ggplot(g) +
+  geom_sf(aes(fill = spatial_mean)) +
+  scale_fill_viridis_c() +
+  theme_minimal() +
+  labs(fill = "Spatial effect")
+
+
+dt_inla
+range(dt_inla$area_id)
+length(unique(dt_inla$area_id))
+
+```
+
