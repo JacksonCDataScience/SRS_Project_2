@@ -1,0 +1,48 @@
+---
+title: "Max"
+output: html_document
+date: "2026-02-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+
+```{r}
+
+library(terra)
+library(data.table)
+
+r_temp  <- rast("ds_us (1901-2024).nc", subds = "tmp")
+r_d2c <- rast("ds_us (1901-2024).nc", subds = "distance_to_coast")
+
+```
+
+
+
+```{r}
+#install.packages("geodata")
+#install.packages("ncdf4")
+
+library(ncdf4)
+library(terra)
+library(geodata)
+
+# add elevation data
+elev <- elevation_30s(country = "USA", path = "data/")
+plot(elev)
+
+elev_05deg <- resample(elev, r_temp[[1]], method = "average")
+plot(elev_05deg)
+
+# combine layers of data
+r_all <- c(r_temp)
+
+writeCDF(r_all, "ds_usa.nc", overwrite=TRUE)
+# covariates (static) to GeoTIFF
+writeRaster(elev_05deg, "elev_usa.tif", overwrite = TRUE)
+writeRaster(r_d2c[[1]], "d2c_usa.tif", overwrite = TRUE)
+```
+
