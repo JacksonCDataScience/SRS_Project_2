@@ -1,0 +1,64 @@
+## (1) Load required packages  
+Here, we used package `terra` for raster/NetCDF handling, `data.table` for fast reshaping and joins, `spdep` for neighbourhood structure, and `INLA` for Bayesian inference. 
+
+```{r}
+library(terra)
+library(data.table)
+library(spdep)
+library(INLA)
+library(geodata)
+```
+---
+
+# (2) Read Input Data for Pre & Processing
+
+Dataset used  
+
+(1) **Annual temperature range raster** from `ds_usa.nc`  
+(2) Static covariates from GeoTIFF:
+
+- elevation (`elev_usa.tif`)
+
+(3) Preprocessing : Align covariates to the temperature grid using CRS transformation and `resample()` i.e. make standard spatial grid for both (covariates and temperature range)
+
+```{r}
+# (1) Input File ----------------------------------------------------------
+
+nc_file   <- "ds_us (1901-2024).nc"
+
+# (2) Input and Preprocessing Raster Data ---------------------------------
+# TEMPERATURE DATASETS ----------------------------------------------------
+# Load temperature data from NetCDF
+r_temp <- rast(nc_file, subds = "tmp")
+
+# checking format r_temp
+stopifnot(inherits(r_temp, "SpatRaster")) #ensure r_temp is a SpatRaster
+stopifnot(nlyr(r_temp) >= 2) #ensure r_temp contains multiple layer
+
+# Get the first temp layer as the reference grid
+ref <- r_temp[[1]]
+# Check that ref has a coordinate reference system
+if (is.na(crs(ref))) stop("temp raster has no CRS; cannot align covariates safely.")
+
+# COVARIATE DATASETS ----------------------------------------------------
+# Now, load the static covariate, elevation
+
+# add elevation data
+elev <- elevation_30s(country = "USA", path = "data/")
+elev_05deg <- resample(elev, r_temp[[1]], method = "average")
+
+r_elev <- rast(elev_05deg) #elevation
+
+
+# Adjust spatial grid covariates to temperature (same CRS & res)
+# Ensure elevation has the same coordinate reference system as the temp grid (use ref)
+# Reproject to match the reference raster if it's different
+if (!same.crs(r_elev, ref)) r_elev <- project(r_elev, ref)
+
+# Resample elevation so that its resolution and grid alignment
+r_elev <- resample(r_elev, ref, method = "bilinear")
+
+# get only single elevation layer
+r_elev <- r_elev[[1]]
+
+```

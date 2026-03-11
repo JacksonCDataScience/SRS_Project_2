@@ -76,7 +76,6 @@ library(data.table)
 library(spdep)
 library(INLA)
 ```
-
 ---
 
 # (2) Read Input Data for Pre & Processing
@@ -93,35 +92,46 @@ Dataset used
 
 ```{r}
 # (1) Input File ----------------------------------------------------------
-nc_file   <- "ds_usa.nc"
 
-# Load yearly temperature range data from NetCDF
-r_all <- rast(nc_file)
+nc_file   <- "ds_us (1901-2024).nc"
+elev_file <- "elev_usa.tif"
+d2c_file  <- "d2c_usa.tif"
 
-# rename data correctly
-year_names <- paste0("temp.range.", 1901:2012)
-names(r_all)[1:length(year_names)] <- year_names 
-names(r_all)[(length(year_names)+1)] <- "elev"
-names(r_all)[(length(year_names)+2)] <- "dist_to_coast"
+# (2) Input and Preprocessing Raster Data ---------------------------------
+# TEMPERATURE DATASETS ----------------------------------------------------
+# Load temperature data from NetCDF
+r_temp <- rast(nc_file, subds = "tmp")
 
-# extract temperature ranges
-r_temp <- r_all[[1:112]]
+# checking format r_temp
+stopifnot(inherits(r_temp, "SpatRaster")) #ensure r_temp is a SpatRaster
+stopifnot(nlyr(r_temp) >= 2) #ensure r_temp contains multiple layer
 
-# Get the first layer as the reference grid
+# Get the first temp layer as the reference grid
 ref <- r_temp[[1]]
-
 # Check that ref has a coordinate reference system
-if (is.na(crs(ref))) stop("temperature raster has no CRS; cannot align covariates safely.")
+if (is.na(crs(ref))) stop("temp raster has no CRS; cannot align covariates safely.")
 
 # COVARIATE DATASETS ----------------------------------------------------
+# Now, load the static covariates, elevation and distance to coast
+r_elev <- rast(elev_file) #elevation
+r_d2c  <- rast(d2c_file) #distance to coast
 
-# Now, load the static covariates
-r_elev <- r_all[[113]]
-r_d2c  <- r_all[[114]]
+# Adjust spatial grid covariates to temperature (same CRS & res)
+# Ensure elevation has the same coordinate reference system as the temp grid (use ref)
+# Reproject to match the reference raster if it's different
+if (!same.crs(r_elev, ref)) r_elev <- project(r_elev, ref)
 
+# Resample elevation so that its resolution and grid alignment
+r_elev <- resample(r_elev, ref, method = "bilinear")
 
-dens <- density(dt$temp_range)
-plot(dens)
+# get only single elevation layer
+r_elev <- r_elev[[1]]
+
+# Same procedure, but in distance to coast
+if (!same.crs(r_d2c, ref)) r_d2c <- project(r_d2c, ref)
+r_d2c <- resample(r_d2c, ref, method = "bilinear")
+r_d2c <- r_d2c[[1]]
+
 ```
 
 ---
@@ -132,8 +142,12 @@ plot(dens)
 - Assign layer names in `YYYY` format for consistent reshaping
 
 ```{r}
-yrs <- 1901:(1900 + nlyr(r_temp))
-names(r_temp) <- as.character(yrs)
+full_start <- as.Date("1901-01-01")
+tt_full <- seq(full_start, by="month", length.out = nlyr(r_temp))
+keep_layers <- which(tt_full >= as.Date("1901-01-01")) #here to subset the years
+r_temp <- r_temp[[keep_layers]]
+tt <- tt_full[keep_layers]
+names(r_temp) <- format(tt, "%Y-%m")
 ```
 
 ---
@@ -146,43 +160,34 @@ names(r_temp) <- as.character(yrs)
 in mainland US and will be dropped in the next step
 
 ```{r}
+# convert r_temp to season temperature ranges
+
 df_temp <- as.data.frame(r_temp, xy = TRUE, cells = TRUE, na.rm = FALSE)
+
 
 dt <- melt(as.data.table(df_temp),
            id.vars = c("cell","x","y"),
-           variable.name = "year",
-           value.name = "temp_range")
+           variable.name = "ym",
+           value.name = "tmp")
 
-setnames(dt, old = c("x","y"), new = c("lon","lat"))
+dt[, year  := as.integer(substr(ym, 1, 4))]
+dt[, month := as.integer(substr(ym, 6, 7))]
 
-dt[, year := as.integer(gsub("temp.range.", "", year))]
+dt <- dt[!is.na(tmp)]
 
-#dt[, year := as.integer(year)]
+dt_range <- dt[, .(tmp_range = max(tmp, na.rm = TRUE) - min(tmp, na.rm = TRUE)),
+               by = .(x, y, cell, year)]
 
-year_levels <- sort(unique(dt$year))
-dt[, t_id := match(year, year_levels)]
+setnames(dt_range, c("x","y"), c("lon","lat"))
 
-# response
-dt[, y_obs := temp_range]
-
+dt_range
 
 ```
 
 
 ---
 
-# (5) Filter valid spatial domain  
-
-Drop grid cells that are missing (`NA`) for **all years** to avoid including ocean/out-of-domain cells.
-
-```{r}
-cell_ok <- dt[, .(keep = any(!is.na(y_obs))), by = cell][keep == TRUE, cell]
-dt <- dt[cell %in% cell_ok]
-```
-
----
-
-# (6) Merge static covariates (robust join by coordinates)
+# (5) Merge static covariates (robust join by coordinates)
 
 ```{r}
 df_elev <- as.data.frame(r_elev, xy = TRUE, na.rm = FALSE)
@@ -196,38 +201,43 @@ setnames(df_d2c,  names(df_d2c)[3],  "dist_to_coast")
 
 df_elev[, `:=`(x = round(x, 6), y = round(y, 6))]
 df_d2c[,  `:=`(x = round(x, 6), y = round(y, 6))]
-dt[,      `:=`(lon = round(lon, 6), lat = round(lat, 6))]
+dt_range[,      `:=`(lon = round(lon, 6), lat = round(lat, 6))]
 
 covs_xy <- merge(df_elev, df_d2c, by = c("x", "y"), all = TRUE)
 
-dt <- merge(dt, covs_xy,
+dt_range <- merge(dt_range, covs_xy,
             by.x = c("lon","lat"),
             by.y = c("x","y"),
             all.x = TRUE)
 
-dt <- dt[!is.na(elev) & !is.na(dist_to_coast)]
+dt_range <- dt_range[!is.na(elev) & !is.na(dist_to_coast)]
 
-dt[, elev_sc := as.numeric(scale(elev))]
-dt[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
+dt_range[, elev_sc := as.numeric(scale(elev))]
+dt_range[, d2c_sc  := as.numeric(scale(log1p(dist_to_coast)))]
 
-stopifnot(nrow(dt) > 0)
+stopifnot(nrow(dt_range) > 0)
 
-dt[, area_id := as.integer(factor(cell))]
+dt_range[, area_id := as.integer(factor(cell))]
 
 
 # get rid of unneeded/duplicate columns
-dt <- dt[,-c("cell", "y_obs")]
+dt_range <- dt_range[,-c("cell")]
+
+# add temporal index
+
+dt_range$t_id <- as.integer(factor(dt_range$year)) # make temporal index
+
 
 ```
 
 ---
 
-# (7) Create spatial index
+# (6) Create spatial index
 
 ```{r}
 # (7) Create spatial index
 
-dt_inla <- copy(dt)
+dt_inla <- copy(dt_range)
 
 # number of spatial areas
 S <- max(dt_inla$area_id)
@@ -235,7 +245,7 @@ S <- max(dt_inla$area_id)
 
 ---
 
-# (8) Construct spatial neighbourhood graph (using rook adjacency)
+# (7) Construct spatial neighbourhood graph (using rook adjacency)
 
 
 ```{r}
@@ -285,15 +295,12 @@ graph_file <- file.path(tempdir(), "usa_grid.graph")
 write_inla_graph(nb_area, graph_file)
 g <- inla.read.graph(graph_file)
 
-dt$log_temp_range <- log(dt$temp_range)
-
-dt
-
 ```
 
 ---
 
-# (9) Fit candidate INLA models (Gaussian likelihood)
+
+# (8) Fit candidate INLA models (Gaussian likelihood)
 
 ```{r}
 
@@ -314,105 +321,87 @@ inla.setOption(num.threads = 8)
 
 # M0: fixed effects only (no spatial/temporal structure)
 m0 <- inla(
-  temp_range ~ 1 + elev_sc,
+  tmp_range ~ 1 + elev_sc,
   data = dt_inla,
   family = "lognormal",
-  control.fixed = ctrl_fxd,
+  #control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
 # M1: + temporal RW2 trend
 m1 <- inla(
-  temp_range ~ 1 + elev_sc +
+  tmp_range ~ 1 + elev_sc +
     f(t_id, model = "rw2", constr = TRUE),
   data = dt_inla,
-  family = "lognormal",
-  control.fixed = ctrl_fxd,
+  family = "gaussian",
+  #control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
+
 
 # M2: + spatial BYM2 effect
 m2 <- inla(
-  temp_range ~ 1 + elev_sc +
+  tmp_range ~ 1 + elev_sc +
     f(area_id, model = "bym2", graph = g,
       scale.model = TRUE, constr = TRUE),
   data = dt_inla,
   family = "lognormal",
-  control.fixed = ctrl_fxd,
+  # control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-
-# M3: spatial BYM2 + temporal RW2 effect
+# M3: full spatio-temporal model
 m3 <- inla(
-  temp_range ~ 1 + elev_sc +
+  tmp_range ~ 1 + elev_sc + 
     f(t_id, model = "rw2", constr = TRUE) +
     f(area_id, model = "bym2", graph = g,
       scale.model = TRUE, constr = TRUE),
   data = dt_inla,
   family = "lognormal",
-  control.fixed = ctrl_fxd,
+  # control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-# M4: spatial BYM2 + temporal RW2 effect with distance to coast
+# remove elevation and just use spatio-temporal model
 m4 <- inla(
-  temp_range ~ 1 + elev_sc + d2c_sc +
+  tmp_range ~ 1 +
     f(t_id, model = "rw2", constr = TRUE) +
     f(area_id, model = "bym2", graph = g,
       scale.model = TRUE, constr = TRUE),
   data = dt_inla,
   family = "lognormal",
-  control.fixed = ctrl_fxd,
+  # control.fixed = ctrl_fxd,
   control.predictor = ctrl_pred,
   control.compute = ctrl_comp
 )
 
-
-m5 <- inla(
-  temp_range ~ 1 +
-    f(t_id, model = "rw2", constr = TRUE) +
-    f(area_id, model = "bym2", graph = g,
-      scale.model = TRUE, constr = TRUE),
-  data = dt_inla,
-  family = "lognormal",
-  control.fixed = ctrl_fxd,
-  control.predictor = ctrl_pred,
-  control.compute = ctrl_comp
-)
- 
-
-
-cor(dt_inla$dist_to_coast, dt_inla$temp_range)
 
 ```
 
 
 ---
 
-# (10) Model comparison
+
+# (9) Model comparison
 
 
 ```{r}
 get_metrics <- function(mod){
   data.table(
-    DIC  = mod$dic$dic,
     WAIC = mod$waic$waic
   )
 }
-
 
 mods <- list(
   M0 = m0,
   M1 = m1,
   M2 = m2,
   M3 = m3,
-  M4 = m4,
-  M5 = m5
+  M4 = m4
 )
 
 metrics <- rbindlist(
@@ -424,35 +413,164 @@ metrics <- rbindlist(
 print(metrics[order(WAIC)])
 ```
 
-# (11) Model evaluation
 
 
 ```{r}
 
-spatial_effect <- m3_log$summary
+print(metrics[order(WAIC)])
+```
+
+# (10) Model evaluation
 
 
-
-summary(m3)
-
-
-g$spatial_mean <- spatial_effect
+```{r}
 
 
-g
-
-library(ggplot2)
-
-ggplot(g) +
-  geom_sf(aes(fill = spatial_mean)) +
-  scale_fill_viridis_c() +
-  theme_minimal() +
-  labs(fill = "Spatial effect")
+m3$summary.fixed
 
 
-dt_inla
-range(dt_inla$area_id)
-length(unique(dt_inla$area_id))
+m3$summary.hyperpar
+
 
 ```
 
+
+```{r}
+library(ggplot2)
+library(terra)
+
+
+spatial <- m3$summary.random$area_id
+spatial_df <- data.frame(spatial$ID, spatial$mean, spatial$sd)
+colnames(spatial_df) <- c("area_id", "spatial_mean", "spatial_sd")
+
+df_spatial <- merge(dt_inla, spatial_df, by="area_id", all.x=TRUE)
+
+cor(df_spatial$spatial_mean, df_spatial$elev)
+
+spatial_cells <- df_spatial[!duplicated(df_spatial$area_id), ]
+
+nrow(spatial_cells)
+
+
+```
+
+```{r}
+library(ggplot2)
+
+
+r <- rast(
+  spatial_cells[, c("lon", "lat", "spatial_mean")],
+  type = "xyz",
+  crs = "EPSG:4326"
+)
+
+r_df <- as.data.frame(r, xy = TRUE)
+
+ggplot(spatial_cells) +
+  geom_raster(aes(x = lon, y = lat, fill = spatial_mean)) +
+  coord_fixed() +
+  scale_fill_gradient2(low="khaki1", mid="#40821f", high="#2B4220", midpoint=0.1) +
+  theme_classic() +
+  theme(panel.border=element_rect(colour="black", fill=NA)) +
+  labs(
+    title = "",
+    fill = "Effect"
+  ) +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size=14)
+  ) +
+  scale_x_continuous(expand = c(0.01,0.01)) +
+  scale_y_continuous(expand = c(0.01,0.01))
+
+
+ggsave("spatial.png", width=8, height=5, dpi=300)
+
+
+```
+
+
+
+```{r elev_plot, fig.width=8, fig.height=5, dev="png"}
+df_elev_no_NA <- df_elev[!is.na(elev),]
+df_elev_no_NA
+
+ggplot(df_elev_no_NA) +
+  geom_raster(aes(x=x, y=y, fill=elev)) +
+  coord_fixed() +
+  scale_fill_gradient2(low="darkgreen", mid="olivedrab3", high="lightgoldenrod1", midpoint=2000) +
+  theme_classic() +
+  theme(panel.border=element_rect(colour="black", fill=NA)) +
+  labs(
+    title = "",
+    fill = "Elevation (m)"
+  ) +
+  xlab("Longitude") +
+  ylab("Latitude") +
+  theme(
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size=13)
+  ) +
+  scale_x_continuous(expand = c(0.01,0.01)) +
+  scale_y_continuous(expand = c(0.01,0.01))
+
+
+ggsave("elevation.png", width=8, height=5, dpi=300)
+
+```
+
+
+
+
+
+
+# (11) Absolute Goodness of Fit Checks (posterior predictive checks, etc.)
+
+
+```{r}
+
+# Posterior predictive checks:
+
+
+
+
+
+# Bayesian p-values:
+
+
+
+
+# Residual diagnostics (and checking assumptions of log normality):
+
+# extract log temps
+log_tmp <- log(dt_range$temp_range)
+
+# evaluate observed data and compare with normal
+hist(log_tmp, breaks = 30, main = "Histogram of log(temp_range)", xlab = "log(temp_range)")
+lines(density(log_tmp), col = "blue", lwd = 2)
+
+# calculate residuals from fitted model
+resid_log <- log(dt_range$temp_range) - m3$summary.linear.predictor$mean
+
+# plot residuals vs mean
+plot(m0$summary.fitted.values$mean, resid_log,
+     xlab = "Fitted values",
+     ylab = "Residuals (log scale)")
+abline(h = 0, col = "red", lty = 2)
+
+# plot residual qq plot
+qqnorm(resid_log)
+qqline(resid_log, col = "red", lwd = 2)
+
+
+
+```
