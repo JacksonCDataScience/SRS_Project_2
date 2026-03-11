@@ -326,12 +326,6 @@ for(i in 1:n_sims){
 }
 y_rep_all <- as.vector(y_rep)
 
-# plot sampled values against observed values
-hist(y_rep_all, breaks = 50, probability = TRUE,
-     main = "Posterior Predictive Sample Distribution",
-     xlab = "Temperature Range")
-lines(density(dt_inla$tmp_range, na.rm = TRUE), col = "red", lwd = 2)
-
 ```
 
 
