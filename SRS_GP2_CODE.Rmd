@@ -23,6 +23,48 @@ library(ggplot2)
 
 ---
 
+## Model Structure
+
+The Bayesian hierarchical spatio-temporal (BHST) model is specified as:
+
+$$
+y_{s,t}
+=
+\mu
++
+\beta_{1}\,\text{Elev}_s
++
+u_s
++
+\delta(t)
++
+\epsilon_{s,t}
+$$
+
+where:
+
+- $y_{s,t}$ denotes the observed temperature range at spatial location $s$ and time $t$.
+
+**Model Components**
+
+- **Global mean ($\mu$)**  
+  Represents the overall average temperature range level across all time periods and spatial locations.
+
+- **Elevation effect ($\beta_1 \text{Elev}_s$)**  
+  Captures the influence of elevation on temperature range variability
+
+- **Smooth temporal trend ($\delta(t)$)**  
+  Captures long-term climate evolution over time.  
+  A second-order random walk (RW2) prior is used to allow a flexible, smooth nonlinear trend without imposing a strict linear structure.
+
+- **Spatial structured effect ($u_s$)**  
+  Models spatial dependence between neighbouring grid cells.  
+  This component is specified using a Conditional Autoregressive (CAR) or BYM2 prior, allowing geographically nearby locations to exhibit similar temperature patterns.
+
+
+
+---
+
 # (1) Create df_usa.nc and elev_usa.tif
 
 ```{r}
