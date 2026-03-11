@@ -19,6 +19,8 @@ library(scoringRules)
 library(ncdf4)
 library(geodata)
 library(ggplot2)
+library(sf)
+library(dplyr)
 ```
 
 ---
@@ -65,7 +67,7 @@ where:
 
 ---
 
-# (1) Create df_usa.nc and elev_usa.tif
+# (1) Create ds_usa.nc and elev_usa.tif
 
 ```{r}
 
@@ -73,18 +75,58 @@ where:
 
 ---
 
-r_temp  <- rast("ds_us (1901-2024).nc", subds = "tmp")
+# Open CRU dataset
+df <- rast("cru_ts4.09.1901.2024.tmp.dat.nc", subds = "tmp")
+
+# Load US states shapefile
+us <- st_read("cb_2018_us_state_500k/cb_2018_us_state_500k.shp")
+
+# Ensure CRS is lon/lat
+if (is.na(st_crs(us))) {
+  st_crs(us) <- 4326
+}
+
+us <- st_transform(us, 4326)
+
+# Remove Alaska, Hawaii, and territories
+drop <- c("AK","HI","PR","AS","VI","GU","MP")
+us <- us %>% filter(!(STUSPS %in% drop))
+
+# Dissolve into single CONUS polygon
+us_union <- st_union(us)
+
+# Bounding box
+bbox <- st_bbox(us_union)
+
+pad <- 0.15
+minx <- bbox["xmin"] - pad
+maxx <- bbox["xmax"] + pad
+miny <- bbox["ymin"] - pad
+maxy <- bbox["ymax"] + pad
+
+# Crop CRU dataset
+cru_us <- crop(df, ext(minx, maxx, miny, maxy))
+
+# Ensure time is Date
+time(cru_us) <- as.Date(time(cru_us))
+
+# Slice 1901–2024
+cru_us <- subset(cru_us,
+                 time(cru_us) >= as.Date("1901-01-01") &
+                 time(cru_us) <= as.Date("2024-12-31"))
+
+# Save dataset
+writeCDF(cru_us,
+         "ds_usa.nc",
+         overwrite = TRUE)
 
 # add elevation data
 elev <- elevation_30s(country = "USA", path = "data/")
 
 elev_05deg <- resample(elev, r_temp[[1]], method = "average")
 
-# combine layers of data
-r_all <- c(r_temp)
-
-writeCDF(r_all, "ds_usa.nc", overwrite=TRUE)
 writeRaster(elev_05deg, "elev_usa.tif", overwrite = TRUE)
+
 ```
 
 ---
@@ -98,10 +140,8 @@ Dataset used
 
 ```{r}
 # Loading the datasets
-nc_file   <- "ds_usa.nc"
+r_temp <- rast("ds_usa.nc")
 elev_file <- "elev_usa.tif"
-
-r_temp <- rast(nc_file, subds = "tmp")
 
 stopifnot(inherits(r_temp, "SpatRaster")) #ensure r_temp is a SpatRaster
 stopifnot(nlyr(r_temp) >= 2) #ensure r_anom contains multiple layer
