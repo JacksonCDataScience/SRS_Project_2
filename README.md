@@ -5,29 +5,29 @@ Google Drive Folder (containing .zip data file): https://drive.google.com/drive/
 Overleaf: https://www.overleaf.com/6786221333tbsdhqpqqnpk#5d7299
 
 Research Question:
-1. How do long-term temporal trends, spatial dependence, and geographic covariates (elevation and distance to coast) explain monthly temperature anomalies over the USA (1961–2024)?
-2. To what extent do Bayesian spatio-temporal models, incorporating elevation and distance-to-coast covariates, improve predictive accuracy for recent anomalies (2021–2024) compared to simpler Bayesian baselines?
+1. How do long-term temporal trends, spatial dependence, and geographic covariates (elevation) explain annual temperature range over the USA (1901–2024)?
+2. To what extent do Bayesian spatio-temporal models, incorporating elevation, the model performance compared to simpler Bayesian baselines?
 
 Objectives :
 1. Construct temperature anomalies from raw temperature data so that values represent departures from a baseline climatology.
 2. Fit a sequence of Bayesian hierarchical models:
-   - Baseline
-   - Baseline + smooth trend (RW2)
-   - Baseline + smooth trend (RW2) + spatial (BYM2)
-   - Baseline + smooth trend (RW2) + spatial (BYM2) + covariates (elevation, distance to coast)
+   - Baseline (only covariate : elevation)
+   - Baseline + smooth trend (RW2) + covariate
+   - Baseline + spatial (BYM2) + covariate
+   - Baseline + smooth trend (RW2) + spatial (BYM2) + covariates (elevation)
 3. Evaluate model performance using:
    - Bayesian: WAIC, DIC
-   - Predictive: MAE and RMSE on a held-out period (test 2021–2024; train 1961–2020)
+   - Predictive:  Continuous Ranked Probability Score (CRPS) and Bayesian Posterior Predictive p-Values (PPP)
 
 Datasets used:
 1. Core NetCDF: cru_ts4.09.1901.2024.tmp.dat.nc
    - raw temperature: tmp
    - temperature anomaly relative to climatology baseline: anom
    - coordinates: lon, lat
-   - monthly time 1961–2024: time
+   - monthly time 1901–2024: time transformed into annual temperature range
 2. Derived analysis table:
    - long-format panel data with one row per (cell, month)
-   - includes covariates: elevation and distance_to_coast
+   - includes covariates: elevation
    
 Preprocessing :
 1. Read NetCDF and align time
